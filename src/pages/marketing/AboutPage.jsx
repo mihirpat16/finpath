@@ -1,7 +1,7 @@
 import { Helmet } from 'react-helmet-async'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Target, ShieldCheck, BarChart2, TrendingUp, ArrowRight, Heart, Sparkles } from 'lucide-react'
+import { Target, ShieldCheck, BarChart2, TrendingUp, ArrowRight, Heart, Sparkles, BookOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 
@@ -160,6 +160,44 @@ export default function AboutPage() {
               ))}
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* Founder */}
+      <section className="py-16">
+        <div className="container max-w-3xl mx-auto px-4">
+          <motion.div
+            variants={fadeUp} initial="hidden" whileInView="show" viewport={{ once: true }}
+            className="text-center mb-10"
+          >
+            <Badge variant="outline" className="mb-4">The person behind it</Badge>
+            <h2 className="text-2xl md:text-3xl font-bold tracking-tight">Meet the founder</h2>
+          </motion.div>
+
+          <motion.div
+            variants={fadeUp} initial="hidden" whileInView="show" viewport={{ once: true }} custom={0.1}
+            className="relative rounded-2xl border border-border bg-card overflow-hidden"
+          >
+            <div className="h-1 w-full bg-gradient-to-r from-trust to-trust/40" />
+            <div className="p-8 sm:p-10">
+              <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6">
+                <div className="flex-shrink-0 flex h-20 w-20 items-center justify-center rounded-2xl bg-trust text-white shadow-lg">
+                  <BookOpen className="h-9 w-9" />
+                </div>
+                <div className="flex-1 text-center sm:text-left">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-1">Founder</p>
+                  <h3 className="text-2xl font-bold mb-1">Mihir Patel</h3>
+                  <p className="text-sm font-medium text-trust mb-3">Chartered Accountant</p>
+                  <p className="text-muted-foreground leading-relaxed text-sm">
+                    Mihir is a Chartered Accountant who built FinPath to bridge the gap between
+                    professional financial knowledge and everyday investors. Having seen first-hand
+                    how overwhelming personal finance can be, he designed FinPath to give every
+                    Indian the same clarity that a CA would offer — completely free.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </motion.div>
         </div>
       </section>
 
