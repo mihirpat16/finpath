@@ -1,7 +1,7 @@
 import { Helmet } from 'react-helmet-async'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Target, ShieldCheck, BarChart2, TrendingUp, ArrowRight, Heart } from 'lucide-react'
+import { Target, ShieldCheck, BarChart2, TrendingUp, ArrowRight, Heart, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 
@@ -160,6 +160,52 @@ export default function AboutPage() {
               ))}
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* Special Thanks */}
+      <section className="py-16">
+        <div className="container max-w-3xl mx-auto px-4">
+          <motion.div
+            variants={fadeUp} initial="hidden" whileInView="show" viewport={{ once: true }}
+            className="text-center mb-10"
+          >
+            <Badge variant="outline" className="mb-4">Acknowledgements</Badge>
+            <h2 className="text-2xl md:text-3xl font-bold tracking-tight">Special thanks</h2>
+          </motion.div>
+
+          <motion.div
+            variants={fadeUp} initial="hidden" whileInView="show" viewport={{ once: true }} custom={0.1}
+            className="relative rounded-2xl border border-border bg-card overflow-hidden"
+          >
+            {/* Decorative gradient bar */}
+            <div className="h-1 w-full bg-gradient-to-r from-trust via-growth to-amber-400" />
+
+            <div className="p-8 sm:p-10">
+              <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6">
+                {/* Avatar / icon */}
+                <div className="flex-shrink-0 flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-trust to-growth text-white shadow-lg">
+                  <Sparkles className="h-9 w-9" />
+                </div>
+
+                <div className="flex-1 text-center sm:text-left">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-1">
+                    With heartfelt gratitude
+                  </p>
+                  <h3 className="text-2xl font-bold mb-3">Vishwa Makwana</h3>
+                  <p className="text-muted-foreground leading-relaxed text-sm mb-4">
+                    FinPath would not exist without the constant encouragement, feedback, and support
+                    of Vishwa Makwana. From early ideas to the final product, her belief in this project
+                    shaped every part of what FinPath has become. This work is as much hers as it is anyone&apos;s.
+                  </p>
+                  <div className="inline-flex items-center gap-1.5 text-rose-500 text-sm font-medium">
+                    <Heart className="h-4 w-4 fill-rose-500" />
+                    Thank you for making this possible
+                  </div>
+                </div>
+              </div>
+            </div>
+          </motion.div>
         </div>
       </section>
 

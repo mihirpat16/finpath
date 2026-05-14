@@ -101,6 +101,9 @@ function Footer() {
           &nbsp;·&nbsp;
           <Link to="/terms" className="underline hover:text-foreground">Terms</Link>
         </p>
+        <p className="text-xs text-muted-foreground text-center mt-2">
+          Special thanks to <span className="font-medium text-foreground">Vishwa Makwana</span> — without her this would not have been possible.
+        </p>
       </div>
     </footer>
   )
