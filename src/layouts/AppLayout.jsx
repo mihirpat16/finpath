@@ -3,7 +3,7 @@ import { Outlet, NavLink, Link, useNavigate, useLocation } from 'react-router-do
 import { useTheme } from 'next-themes'
 import {
   LayoutDashboard, Target, ShieldCheck, PieChart, BarChart2,
-  Settings, TrendingUp, Menu, X, Sun, Moon, Bell, ChevronDown, LogOut, User,
+  Settings, TrendingUp, Menu, X, Sun, Moon, Bell, ChevronDown, LogOut, User, Calculator,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -21,6 +21,7 @@ const NAV_ITEMS = [
   { to: '/app/goals', label: 'Goals', icon: Target },
   { to: '/app/risk', label: 'Risk Profile', icon: ShieldCheck },
   { to: '/app/portfolio', label: 'Portfolio', icon: PieChart },
+  { to: '/app/planner', label: 'Planner', icon: Calculator },
   { to: '/app/trackers', label: 'Trackers', icon: BarChart2 },
   { to: '/app/settings', label: 'Settings', icon: Settings },
 ]

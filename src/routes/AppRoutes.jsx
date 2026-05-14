@@ -39,6 +39,7 @@ const DebtPage = lazy(() => import('@/pages/trackers/DebtPage'))
 const PortfolioTrackerPage = lazy(() => import('@/pages/trackers/PortfolioTrackerPage'))
 const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'))
 const AdminPage = lazy(() => import('@/pages/admin/AdminPage'))
+const PlannerPage = lazy(() => import('@/pages/planner/PlannerPage'))
 
 function PageSpinner() {
   return (
@@ -94,6 +95,7 @@ export default function AppRoutes() {
         <Route path="risk/quiz" element={<Suspense fallback={<PageSpinner />}><RiskQuizInnerPage /></Suspense>} />
         <Route path="risk/results" element={<Suspense fallback={<PageSpinner />}><RiskResultsPage /></Suspense>} />
         <Route path="portfolio" element={<Suspense fallback={<PageSpinner />}><RecommendationsPage /></Suspense>} />
+        <Route path="planner" element={<Suspense fallback={<PageSpinner />}><PlannerPage /></Suspense>} />
         <Route path="trackers" element={<Suspense fallback={<PageSpinner />}><TrackersHubPage /></Suspense>} />
         <Route path="trackers/net-worth" element={<Suspense fallback={<PageSpinner />}><NetWorthPage /></Suspense>} />
         <Route path="trackers/debt" element={<Suspense fallback={<PageSpinner />}><DebtPage /></Suspense>} />
