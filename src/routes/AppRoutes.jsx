@@ -16,6 +16,8 @@ import ContactPage from '@/pages/marketing/ContactPage'
 
 // Auth
 import RegisterPage from '@/pages/auth/RegisterPage'
+import LoginPage from '@/pages/auth/LoginPage'
+import AuthCallback from '@/pages/auth/AuthCallback'
 
 // Onboarding steps (small — no lazy needed)
 import OnboardingPage from '@/pages/onboarding/OnboardingPage'
@@ -63,9 +65,11 @@ export default function AppRoutes() {
       </Route>
 
       {/* Auth */}
+      <Route path="auth/callback" element={<AuthCallback />} />
       <Route path="auth" element={<AuthLayout />}>
         <Route path="register" element={<RegisterPage />} />
-        <Route path="*" element={<Navigate to="/auth/register" replace />} />
+        <Route path="login" element={<LoginPage />} />
+        <Route path="*" element={<Navigate to="/auth/login" replace />} />
       </Route>
 
       {/* Protected app routes */}

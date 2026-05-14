@@ -39,6 +39,9 @@ function Navbar() {
 
         <div className="flex items-center gap-2">
           <ThemeToggle />
+          <Button size="sm" variant="ghost" asChild>
+            <Link to="/auth/login">Sign In</Link>
+          </Button>
           <Button size="sm" className="bg-trust hover:bg-trust/90 text-white" asChild>
             <Link to="/auth/register">Get Started</Link>
           </Button>
