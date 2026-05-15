@@ -22,11 +22,11 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
 import { formatCurrency } from '@/lib/format'
 import { useHoldings, useAddHolding, useUpdateHolding, useDeleteHolding } from '@/hooks/useHoldings'
-import { updateHolding as dbUpdateHolding } from '@/lib/supabase/holdings'
 import { portfolioReturns, assetClassDrift } from '@/lib/trackers/portfolio'
 import { useRiskProfile } from '@/hooks/useRiskProfile'
-import { useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '@/context/AuthContext'
+import { usePrices } from '@/hooks/usePrices'
+import { marketStatusLabel, marketStatusColor, formatTimeAgo } from '@/lib/market-data/market-hours'
 
 const ASSET_CLASSES = ['equity', 'debt', 'gold', 'alternatives', 'cash']
 const CLASS_COLORS = {
@@ -56,64 +56,11 @@ function parseTicker(ticker) {
   return { type: 'stock', value: ticker }
 }
 
-// ── Live price fetching ───────────────────────────────────────────────────────
+// ── MF search (used in HoldingDialog only) ───────────────────────────────────
 async function searchMFunds(query) {
   const res = await fetch(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(query)}`)
   if (!res.ok) throw new Error('Search failed')
   return res.json() // [{schemeCode, schemeName}]
-}
-
-async function fetchMFNav(schemeCode) {
-  const res = await fetch(`https://api.mfapi.in/mf/${schemeCode}`)
-  if (!res.ok) throw new Error('NAV fetch failed')
-  const json = await res.json()
-  const nav = parseFloat(json.data?.[0]?.nav)
-  if (isNaN(nav)) throw new Error('Invalid NAV data')
-  return nav
-}
-
-async function fetchStockPrice(symbol) {
-  const ticker = symbol.includes('.') ? symbol : `${symbol}.NS`
-
-  // 1️⃣ Finnhub (if user has set an API key in localStorage)
-  const finnhubKey = localStorage.getItem('finnhub_api_key')
-  if (finnhubKey) {
-    try {
-      const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=NSE:${symbol.replace('.NS','').replace('.BO','')}&token=${finnhubKey}`, { signal: AbortSignal.timeout(6000) })
-      if (res.ok) {
-        const json = await res.json()
-        if (json.c && json.c > 0) return json.c // current price
-      }
-    } catch { /* fall through */ }
-  }
-
-  // 2️⃣ Yahoo Finance direct
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d`
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) })
-    if (res.ok) {
-      const json = await res.json()
-      const price = json.chart?.result?.[0]?.meta?.regularMarketPrice
-      if (price) return price
-    }
-  } catch { /* fall through to proxy */ }
-
-  // 3️⃣ CORS proxy fallback
-  const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
-  const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(10000) })
-  if (!res.ok) throw new Error('Price fetch failed')
-  const json = await res.json()
-  const price = json.chart?.result?.[0]?.meta?.regularMarketPrice
-  if (!price) throw new Error('No price in response')
-  return price
-}
-
-async function fetchLivePrice(holding) {
-  const { type, value } = parseTicker(holding.ticker)
-  if (!value) return null
-  if (type === 'mutual_fund') return fetchMFNav(value)
-  if (type === 'stock') return fetchStockPrice(value)
-  return null
 }
 
 // ── CSV Import ────────────────────────────────────────────────────────────────
@@ -622,21 +569,34 @@ function DriftBanner({ drifts }) {
 export default function PortfolioTrackerPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editHolding, setEditHolding] = useState(null)
-  const [refreshing, setRefreshing] = useState(false)
-  const [refreshStatus, setRefreshStatus] = useState({})
   const [csvOpen, setCsvOpen] = useState(false)
   const [finnhubOpen, setFinnhubOpen] = useState(false)
 
   const { data: holdings = [], isLoading } = useHoldings()
   const { data: riskProfile } = useRiskProfile()
   const { user } = useAuth()
-  const qc = useQueryClient()
+
+  const tickers = useMemo(
+    () => [...new Set(holdings.map(h => h.ticker).filter(Boolean))],
+    [holdings]
+  )
+  const { priceMap, isRefetching, refetch } = usePrices(tickers)
 
   const targetAllocation = useMemo(() => riskProfile?.allocation ?? {}, [riskProfile])
 
+  // Build id→price map from live cache for portfolioReturns
+  const currentPrices = useMemo(() => {
+    const map = {}
+    for (const h of holdings) {
+      const pr = priceMap.get(h.ticker)
+      if (pr?.current_price != null) map[h.id] = pr.current_price
+    }
+    return map
+  }, [holdings, priceMap])
+
   const { rows, totalCurrentValue, totalInvested, absoluteGain, returnPct } = useMemo(
-    () => portfolioReturns(holdings, {}),
-    [holdings]
+    () => portfolioReturns(holdings, currentPrices),
+    [holdings, currentPrices]
   )
 
   const drifts = useMemo(
@@ -652,49 +612,19 @@ export default function PortfolioTrackerPage() {
   ).map(([key, value]) => ({ name: CLASS_LABELS[key] ?? key, value, color: CLASS_COLORS[key] ?? '#999' }))
 
   async function handleRefresh() {
-    if (!holdings.length) return
-    setRefreshing(true)
-    const holdingsWithTicker = holdings.filter(h => h.ticker)
-    if (!holdingsWithTicker.length) {
-      toast.error('No holdings have a ticker/scheme code set. Edit a holding to add one.')
-      setRefreshing(false)
+    if (!tickers.length) {
+      toast.error('No holdings have a ticker set. Edit a holding to add one.')
       return
     }
-
-    const status = {}
-    holdingsWithTicker.forEach(h => { status[h.id] = 'pending' })
-    setRefreshStatus({ ...status })
-
-    let updated = 0, failed = 0
-    await Promise.all(holdingsWithTicker.map(async (h) => {
-      try {
-        const price = await fetchLivePrice(h)
-        if (price !== null && price > 0) {
-          await dbUpdateHolding(h.id, { current_price: price, last_price_update: new Date().toISOString() })
-          setRefreshStatus(s => ({ ...s, [h.id]: 'ok' }))
-          updated++
-        } else {
-          setRefreshStatus(s => ({ ...s, [h.id]: 'error' }))
-          failed++
-        }
-      } catch {
-        setRefreshStatus(s => ({ ...s, [h.id]: 'error' }))
-        failed++
-      }
-    }))
-
-    qc.invalidateQueries({ queryKey: ['holdings', user?.id] })
-    setRefreshing(false)
-
-    if (updated > 0 && failed === 0) toast.success(`Live prices updated for ${updated} holding${updated > 1 ? 's' : ''}.`)
-    else if (updated > 0) toast.success(`Updated ${updated} holding${updated > 1 ? 's' : ''}. ${failed} failed — check ticker symbols.`)
-    else toast.error('Could not fetch prices. Check your internet connection or ticker symbols.')
+    await refetch()
+    toast.success('Prices refreshed from live market data.')
   }
 
   function openAdd() { setEditHolding(null); setDialogOpen(true) }
   function openEdit(h) { setEditHolding(h); setDialogOpen(true) }
 
-  const canRefresh = holdings.some(h => h.ticker)
+  const canRefresh = tickers.length > 0
+  const hasFinnhubKey = !!import.meta.env.VITE_FINNHUB_API_KEY || !!localStorage.getItem('finnhub_api_key')
 
   return (
     <div className="space-y-6">
@@ -706,21 +636,24 @@ export default function PortfolioTrackerPage() {
           </Link>
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Investment Portfolio</h1>
-            <p className="text-sm text-muted-foreground mt-0.5">Live NAV & market prices · Allocation drift</p>
+            <div className="flex items-center gap-2 mt-0.5">
+              <p className="text-sm text-muted-foreground">Live NAV & market prices · Allocation drift</p>
+              <span className={`text-xs font-medium ${marketStatusColor()}`}>{marketStatusLabel()}</span>
+            </div>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="outline" className="gap-2" onClick={() => setFinnhubOpen(true)}>
             <Key className="h-3.5 w-3.5" />
-            {localStorage.getItem('finnhub_api_key') ? 'Finnhub ✓' : 'Add API Key'}
+            {hasFinnhubKey ? 'Finnhub ✓' : 'Add API Key'}
           </Button>
           <Button size="sm" variant="outline" className="gap-2" onClick={() => setCsvOpen(true)}>
             <Upload className="h-3.5 w-3.5" /> Import CSV
           </Button>
           {canRefresh && (
-            <Button size="sm" variant="outline" className="gap-2" onClick={handleRefresh} disabled={refreshing}>
-              <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-              {refreshing ? 'Fetching…' : 'Refresh prices'}
+            <Button size="sm" variant="outline" className="gap-2" onClick={handleRefresh} disabled={isRefetching}>
+              <RefreshCw className={`h-3.5 w-3.5 ${isRefetching ? 'animate-spin' : ''}`} />
+              {isRefetching ? 'Fetching…' : 'Refresh prices'}
             </Button>
           )}
           <Button size="sm" className="bg-trust hover:bg-trust/90 text-white gap-2" onClick={openAdd}>
@@ -837,7 +770,7 @@ export default function PortfolioTrackerPage() {
                       {rows.map((h) => {
                         const ret = h.invested > 0 ? ((h.currentValue - h.invested) / h.invested) * 100 : 0
                         const { type } = parseTicker(h.ticker)
-                        const statusIcon = refreshStatus[h.id] === 'ok' ? '✓' : refreshStatus[h.id] === 'error' ? '✗' : refreshStatus[h.id] === 'pending' ? '…' : null
+                        const priceRow = h.ticker ? priceMap.get(h.ticker) : null
                         return (
                           <tr key={h.id} className="border-b border-border/50 last:border-0">
                             <td className="py-2.5 pr-3">
@@ -846,10 +779,10 @@ export default function PortfolioTrackerPage() {
                                 <Badge variant="outline" className="text-xs py-0 capitalize">{h.asset_class}</Badge>
                                 {type === 'mutual_fund' && <span className="text-[10px] text-muted-foreground">AMFI NAV</span>}
                                 {type === 'stock' && <span className="text-[10px] text-muted-foreground">NSE</span>}
-                                {statusIcon && (
-                                  <span className={`text-[10px] font-bold ${statusIcon === '✓' ? 'text-growth' : statusIcon === '✗' ? 'text-destructive' : 'text-muted-foreground'}`}>
-                                    {statusIcon}
-                                  </span>
+                                {priceRow?.fetch_error && <span className="text-[10px] text-rose-500 font-medium">⚠ fetch error</span>}
+                                {!priceRow?.fetch_error && priceRow?.stale && <span className="text-[10px] text-amber-500 font-medium">⚠ stale</span>}
+                                {!priceRow?.fetch_error && !priceRow?.stale && priceRow?.last_updated && (
+                                  <span className="text-[10px] text-muted-foreground">{formatTimeAgo(priceRow.last_updated)}</span>
                                 )}
                               </div>
                             </td>
@@ -884,8 +817,8 @@ export default function PortfolioTrackerPage() {
 
             {/* Price source note */}
             <div className="mt-4 pt-3 border-t border-border/50 text-xs text-muted-foreground space-y-0.5">
-              <p>📊 Mutual fund NAV: sourced from <span className="font-medium">AMFI via mfapi.in</span> · updated daily after market close</p>
-              <p>📈 Stock prices: sourced from <span className="font-medium">NSE via Yahoo Finance</span> · updated during market hours (9:15 AM – 3:30 PM)</p>
+              <p>📊 Mutual fund NAV: sourced from <span className="font-medium">AMFI via mfapi.in</span> · cached 15 min · updated daily after market close</p>
+              <p>📈 Stock prices: sourced from <span className="font-medium">Finnhub (NSE)</span> · cached 15 min · live during market hours (9:15 AM – 3:30 PM IST)</p>
             </div>
           </div>
         </div>
