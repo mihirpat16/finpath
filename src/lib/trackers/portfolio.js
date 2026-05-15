@@ -20,11 +20,11 @@ export function portfolioReturns(holdings, currentPrices = {}) {
 }
 
 /**
- * assetClassDrift — compare current allocation vs target.
- * Returns [{assetClass, currentPct, targetPct, drift}] sorted by |drift| desc.
+ * assetClassDrift — compare current allocation vs target using live prices.
+ * Returns [{assetClass, currentPct, targetPct, drift, currentValue}] sorted by |drift| desc.
  */
-export function assetClassDrift(holdings, targetAllocation = {}) {
-  const { rows, totalCurrentValue } = portfolioReturns(holdings)
+export function assetClassDrift(holdings, targetAllocation = {}, currentPrices = {}) {
+  const { rows, totalCurrentValue } = portfolioReturns(holdings, currentPrices)
   if (totalCurrentValue === 0) return []
 
   const byClass = {}
@@ -37,7 +37,38 @@ export function assetClassDrift(holdings, targetAllocation = {}) {
       const currentPct = (value / totalCurrentValue) * 100
       const targetPct = targetAllocation[assetClass] ?? 0
       const drift = currentPct - targetPct
-      return { assetClass, currentPct, targetPct, drift }
+      return { assetClass, currentPct, targetPct, drift, currentValue: value }
     })
+    .sort((a, b) => Math.abs(b.drift) - Math.abs(a.drift))
+}
+
+/**
+ * rebalancingSuggestions — compute ₹ amounts to buy/sell per asset class.
+ * Returns [{assetClass, currentPct, targetPct, drift, currentValue, targetValue, delta}]
+ * delta > 0 = need to buy, delta < 0 = need to sell
+ */
+export function rebalancingSuggestions(holdings, targetAllocation = {}, currentPrices = {}) {
+  const { rows, totalCurrentValue } = portfolioReturns(holdings, currentPrices)
+  if (totalCurrentValue === 0 || !Object.keys(targetAllocation).length) return []
+
+  const byClass = {}
+  for (const r of rows) {
+    byClass[r.asset_class] = (byClass[r.asset_class] ?? 0) + r.currentValue
+  }
+
+  // Include all asset classes that appear in either holdings or target
+  const allClasses = new Set([...Object.keys(byClass), ...Object.keys(targetAllocation)])
+
+  return [...allClasses]
+    .map(assetClass => {
+      const currentValue = byClass[assetClass] ?? 0
+      const currentPct = (currentValue / totalCurrentValue) * 100
+      const targetPct = targetAllocation[assetClass] ?? 0
+      const targetValue = (targetPct / 100) * totalCurrentValue
+      const delta = targetValue - currentValue
+      const drift = currentPct - targetPct
+      return { assetClass, currentPct, targetPct, drift, currentValue, targetValue, delta }
+    })
+    .filter(s => targetAllocation[s.assetClass] > 0 || s.currentValue > 0)
     .sort((a, b) => Math.abs(b.drift) - Math.abs(a.drift))
 }

@@ -22,7 +22,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
 import { formatCurrency } from '@/lib/format'
 import { useHoldings, useAddHolding, useUpdateHolding, useDeleteHolding } from '@/hooks/useHoldings'
-import { portfolioReturns, assetClassDrift } from '@/lib/trackers/portfolio'
+import { portfolioReturns, assetClassDrift, rebalancingSuggestions } from '@/lib/trackers/portfolio'
 import { useRiskProfile } from '@/hooks/useRiskProfile'
 import { useAuth } from '@/context/AuthContext'
 import { usePrices } from '@/hooks/usePrices'
@@ -543,24 +543,112 @@ function HoldingDialog({ open, onOpenChange, editHolding }) {
   )
 }
 
-// ── Drift Banner ──────────────────────────────────────────────────────────────
-function DriftBanner({ drifts }) {
-  const flagged = drifts.filter((d) => Math.abs(d.drift) > 5)
-  if (!flagged.length) return null
-  return (
-    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 flex gap-3 items-start">
-      <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
-      <div className="text-sm">
-        <p className="font-semibold text-amber-700 dark:text-amber-400 mb-1">Allocation drift detected</p>
-        <ul className="space-y-0.5 text-muted-foreground">
-          {flagged.map((d) => (
-            <li key={d.assetClass}>
-              {CLASS_LABELS[d.assetClass]}: currently {d.currentPct.toFixed(1)}% vs target {d.targetPct.toFixed(1)}%
-              {' '}({d.drift > 0 ? '+' : ''}{d.drift.toFixed(1)}%)
-            </li>
-          ))}
-        </ul>
+// ── Rebalancing Card ──────────────────────────────────────────────────────────
+function RebalancingCard({ suggestions, totalCurrentValue, hasRiskProfile }) {
+  if (!hasRiskProfile) {
+    return (
+      <div className="rounded-2xl border border-border bg-card p-5 flex items-start gap-3">
+        <AlertTriangle className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
+        <div>
+          <p className="font-semibold text-sm mb-0.5">No target allocation set</p>
+          <p className="text-xs text-muted-foreground">
+            Complete the <a href="/app/risk" className="underline text-trust">Risk Profile quiz</a> to get personalised rebalancing suggestions.
+          </p>
+        </div>
       </div>
+    )
+  }
+
+  if (!suggestions.length) return null
+
+  const toSell = suggestions.filter(s => s.delta < -500)
+  const toBuy = suggestions.filter(s => s.delta > 500)
+  const onTarget = suggestions.filter(s => Math.abs(s.delta) <= 500)
+  const hasDrift = toSell.length > 0 || toBuy.length > 0
+
+  function driftColor(drift) {
+    const abs = Math.abs(drift)
+    if (abs <= 2) return 'text-growth'
+    if (abs <= 5) return 'text-amber-500'
+    return 'text-rose-500'
+  }
+
+  function barWidth(pct) {
+    return `${Math.min(100, Math.max(0, pct))}%`
+  }
+
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-sm">Rebalancing Guide</h2>
+        <div className="flex items-center gap-2">
+          {hasDrift
+            ? <Badge className="bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30 text-xs">Drift detected</Badge>
+            : <Badge className="bg-growth/10 text-growth border-growth/30 text-xs">On target</Badge>}
+          <span className="text-xs text-muted-foreground">Based on live prices</span>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {suggestions.map(s => {
+          const action = s.delta > 500 ? 'buy' : s.delta < -500 ? 'sell' : 'hold'
+          return (
+            <div key={s.assetClass} className="space-y-1">
+              <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2">
+                  <div className="h-2.5 w-2.5 rounded-full flex-shrink-0" style={{ background: CLASS_COLORS[s.assetClass] ?? '#999' }} />
+                  <span className="font-medium">{CLASS_LABELS[s.assetClass] ?? s.assetClass}</span>
+                  <span className="text-muted-foreground">{s.currentPct.toFixed(1)}%</span>
+                  <span className="text-muted-foreground">→ target {s.targetPct.toFixed(0)}%</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`font-semibold ${driftColor(s.drift)}`}>
+                    {s.drift > 0 ? '+' : ''}{s.drift.toFixed(1)}%
+                  </span>
+                  {action === 'buy' && (
+                    <span className="rounded-md bg-growth/10 text-growth text-[10px] font-semibold px-1.5 py-0.5">
+                      BUY {formatCurrency(Math.abs(s.delta))}
+                    </span>
+                  )}
+                  {action === 'sell' && (
+                    <span className="rounded-md bg-rose-500/10 text-rose-500 text-[10px] font-semibold px-1.5 py-0.5">
+                      SELL {formatCurrency(Math.abs(s.delta))}
+                    </span>
+                  )}
+                  {action === 'hold' && (
+                    <span className="rounded-md bg-growth/10 text-growth text-[10px] font-semibold px-1.5 py-0.5">✓</span>
+                  )}
+                </div>
+              </div>
+              {/* Stacked bar: current vs target */}
+              <div className="relative h-1.5 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="absolute left-0 top-0 h-full rounded-full transition-all"
+                  style={{ width: barWidth(s.currentPct), background: CLASS_COLORS[s.assetClass] ?? '#999', opacity: 0.7 }}
+                />
+                <div
+                  className="absolute top-0 h-full w-0.5 bg-foreground/40"
+                  style={{ left: barWidth(s.targetPct) }}
+                  title={`Target: ${s.targetPct}%`}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {hasDrift && (
+        <div className="rounded-xl bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">Summary: </span>
+          {toSell.length > 0 && (
+            <span>Sell {toSell.map(s => `${CLASS_LABELS[s.assetClass]} (${formatCurrency(Math.abs(s.delta))})`).join(', ')}</span>
+          )}
+          {toSell.length > 0 && toBuy.length > 0 && <span> · </span>}
+          {toBuy.length > 0 && (
+            <span>Buy {toBuy.map(s => `${CLASS_LABELS[s.assetClass]} (${formatCurrency(s.delta)})`).join(', ')}</span>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -600,8 +688,13 @@ export default function PortfolioTrackerPage() {
   )
 
   const drifts = useMemo(
-    () => assetClassDrift(holdings, targetAllocation),
-    [holdings, targetAllocation]
+    () => assetClassDrift(holdings, targetAllocation, currentPrices),
+    [holdings, targetAllocation, currentPrices]
+  )
+
+  const suggestions = useMemo(
+    () => rebalancingSuggestions(holdings, targetAllocation, currentPrices),
+    [holdings, targetAllocation, currentPrices]
   )
 
   const donutData = Object.entries(
@@ -691,8 +784,14 @@ export default function PortfolioTrackerPage() {
         ))}
       </div>
 
-      {/* Drift banner */}
-      {drifts.length > 0 && <DriftBanner drifts={drifts} />}
+      {/* Rebalancing card */}
+      {holdings.length > 0 && !isLoading && (
+        <RebalancingCard
+          suggestions={suggestions}
+          totalCurrentValue={totalCurrentValue}
+          hasRiskProfile={!!riskProfile?.allocation}
+        />
+      )}
 
       {holdings.length === 0 && !isLoading ? (
         <div className="flex flex-col items-center justify-center py-20 text-center">
