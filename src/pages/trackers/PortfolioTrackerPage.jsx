@@ -1,6 +1,7 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, Pencil, Trash2, ArrowLeft, PieChart, RefreshCw, AlertTriangle } from 'lucide-react'
+import { toast } from 'sonner'
+import { Plus, Pencil, Trash2, ArrowLeft, PieChart, RefreshCw, AlertTriangle, Search, X, Clock } from 'lucide-react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -18,39 +19,91 @@ import {
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
-import { formatCurrency, formatPercent, formatDate } from '@/lib/format'
+import { formatCurrency } from '@/lib/format'
 import { useHoldings, useAddHolding, useUpdateHolding, useDeleteHolding } from '@/hooks/useHoldings'
+import { updateHolding as dbUpdateHolding } from '@/lib/supabase/holdings'
 import { portfolioReturns, assetClassDrift } from '@/lib/trackers/portfolio'
 import { useRiskProfile } from '@/hooks/useRiskProfile'
+import { useQueryClient } from '@tanstack/react-query'
+import { useAuth } from '@/context/AuthContext'
 
 const ASSET_CLASSES = ['equity', 'debt', 'gold', 'alternatives', 'cash']
 const CLASS_COLORS = {
-  equity: '#0F2A4A',
-  debt: '#10B981',
-  gold: '#F59E0B',
-  alternatives: '#8B5CF6',
-  cash: '#6B7280',
+  equity: '#0F2A4A', debt: '#10B981', gold: '#F59E0B', alternatives: '#8B5CF6', cash: '#6B7280',
 }
 const CLASS_LABELS = {
   equity: 'Equity', debt: 'Debt', gold: 'Gold', alternatives: 'Alternatives', cash: 'Cash',
 }
 
-// Mock price refresh — applies per-class multipliers with small random variance
-const CLASS_MULTIPLIERS = { equity: 1.15, debt: 1.07, gold: 1.13, alternatives: 1.08, cash: 1.065 }
+// ── Ticker encoding ───────────────────────────────────────────────────────────
+// MF:122639   → mutual fund, scheme code 122639
+// STK:RELIANCE → stock, NSE symbol RELIANCE
+// (empty)     → no live price
 
-function mockRefreshedPrices(holdings) {
-  return Object.fromEntries(
-    holdings.map((h) => {
-      const base = CLASS_MULTIPLIERS[h.asset_class] ?? 1.05
-      const variance = 1 + (Math.random() - 0.5) * 0.04
-      return [h.id, Number((h.avg_buy_price * base * variance).toFixed(2))]
-    })
-  )
+function encodeTicker(type, value) {
+  if (type === 'mutual_fund') return `MF:${value}`
+  if (type === 'stock') return `STK:${value.toUpperCase().trim()}`
+  return ''
 }
 
+function parseTicker(ticker) {
+  if (!ticker) return { type: 'other', value: '' }
+  if (ticker.startsWith('MF:')) return { type: 'mutual_fund', value: ticker.slice(3) }
+  if (ticker.startsWith('STK:')) return { type: 'stock', value: ticker.slice(4) }
+  // Legacy: plain number → old-style scheme code; plain text → stock symbol
+  if (/^\d+$/.test(ticker)) return { type: 'mutual_fund', value: ticker }
+  return { type: 'stock', value: ticker }
+}
+
+// ── Live price fetching ───────────────────────────────────────────────────────
+async function searchMFunds(query) {
+  const res = await fetch(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(query)}`)
+  if (!res.ok) throw new Error('Search failed')
+  return res.json() // [{schemeCode, schemeName}]
+}
+
+async function fetchMFNav(schemeCode) {
+  const res = await fetch(`https://api.mfapi.in/mf/${schemeCode}`)
+  if (!res.ok) throw new Error('NAV fetch failed')
+  const json = await res.json()
+  const nav = parseFloat(json.data?.[0]?.nav)
+  if (isNaN(nav)) throw new Error('Invalid NAV data')
+  return nav
+}
+
+async function fetchStockPrice(symbol) {
+  const ticker = symbol.includes('.') ? symbol : `${symbol}.NS`
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d`
+  // Try direct first (works sometimes)
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) })
+    if (res.ok) {
+      const json = await res.json()
+      const price = json.chart?.result?.[0]?.meta?.regularMarketPrice
+      if (price) return price
+    }
+  } catch { /* fall through to proxy */ }
+  // CORS proxy fallback
+  const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+  const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(10000) })
+  if (!res.ok) throw new Error('Price fetch failed')
+  const json = await res.json()
+  const price = json.chart?.result?.[0]?.meta?.regularMarketPrice
+  if (!price) throw new Error('No price in response')
+  return price
+}
+
+async function fetchLivePrice(holding) {
+  const { type, value } = parseTicker(holding.ticker)
+  if (!value) return null
+  if (type === 'mutual_fund') return fetchMFNav(value)
+  if (type === 'stock') return fetchStockPrice(value)
+  return null
+}
+
+// ── Holding Dialog ────────────────────────────────────────────────────────────
 const holdingSchema = z.object({
   instrument_name: z.string().min(2, 'Name required'),
-  ticker: z.string().optional(),
   asset_class: z.enum(ASSET_CLASSES),
   units: z.coerce.number().positive('Must be positive'),
   avg_buy_price: z.coerce.number().positive('Must be positive'),
@@ -62,45 +115,175 @@ function HoldingDialog({ open, onOpenChange, editHolding }) {
   const update = useUpdateHolding()
   const isEdit = !!editHolding
 
-  const { register, handleSubmit, control, reset, formState: { errors } } = useForm({
+  const parsed = editHolding?.ticker ? parseTicker(editHolding.ticker) : null
+  const [holdingType, setHoldingType] = useState(parsed?.type ?? 'mutual_fund')
+  const [stockSymbol, setStockSymbol] = useState(parsed?.type === 'stock' ? parsed.value : '')
+  const [mfSearch, setMfSearch] = useState('')
+  const [mfResults, setMfResults] = useState([])
+  const [mfSearching, setMfSearching] = useState(false)
+  const [selectedFund, setSelectedFund] = useState(
+    parsed?.type === 'mutual_fund' ? { schemeCode: parsed.value, schemeName: editHolding?.instrument_name } : null
+  )
+
+  const { register, handleSubmit, control, reset, setValue, watch, formState: { errors } } = useForm({
     resolver: zodResolver(holdingSchema),
-    defaultValues: editHolding ?? { asset_class: 'equity' },
+    defaultValues: editHolding
+      ? { instrument_name: editHolding.instrument_name, asset_class: editHolding.asset_class, units: editHolding.units, avg_buy_price: editHolding.avg_buy_price, total_invested: editHolding.total_invested }
+      : { asset_class: 'equity', instrument_name: '', units: '', avg_buy_price: '', total_invested: '' },
   })
 
-  useState(() => {
-    reset(editHolding ?? { instrument_name: '', ticker: '', asset_class: 'equity', units: '', avg_buy_price: '', total_invested: '' })
-  }, [editHolding])
+  const units = watch('units')
+  const avgBuy = watch('avg_buy_price')
+  useEffect(() => {
+    if (units > 0 && avgBuy > 0) setValue('total_invested', Math.round(units * avgBuy))
+  }, [units, avgBuy, setValue])
+
+  // MF search debounce
+  useEffect(() => {
+    if (holdingType !== 'mutual_fund' || mfSearch.length < 3) { setMfResults([]); return }
+    const t = setTimeout(async () => {
+      setMfSearching(true)
+      try { setMfResults((await searchMFunds(mfSearch)).slice(0, 7)) }
+      catch { setMfResults([]) }
+      finally { setMfSearching(false) }
+    }, 400)
+    return () => clearTimeout(t)
+  }, [mfSearch, holdingType])
+
+  function selectFund(fund) {
+    setSelectedFund(fund)
+    setMfSearch(fund.schemeName)
+    setMfResults([])
+    setValue('instrument_name', fund.schemeName)
+  }
+
+  function clearFund() {
+    setSelectedFund(null)
+    setMfSearch('')
+    setValue('instrument_name', '')
+  }
 
   async function onSubmit(data) {
-    const payload = { ...data, current_price: data.avg_buy_price, last_price_update: new Date().toISOString() }
-    if (isEdit) {
-      await update.mutateAsync({ id: editHolding.id, ...payload })
-    } else {
-      await add.mutateAsync(payload)
+    let ticker = ''
+    if (holdingType === 'mutual_fund' && selectedFund) ticker = encodeTicker('mutual_fund', selectedFund.schemeCode)
+    else if (holdingType === 'stock' && stockSymbol) ticker = encodeTicker('stock', stockSymbol)
+
+    const payload = { ...data, ticker, current_price: data.avg_buy_price, last_price_update: new Date().toISOString() }
+    try {
+      if (isEdit) await update.mutateAsync({ id: editHolding.id, ...payload })
+      else await add.mutateAsync(payload)
+      onOpenChange(false)
+    } catch {
+      toast.error('Could not save holding. Please try again.')
     }
-    onOpenChange(false)
   }
 
   const isPending = add.isPending || update.isPending
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{isEdit ? 'Edit Holding' : 'Add Holding'}</DialogTitle>
         </DialogHeader>
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4 pt-2">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1 col-span-2">
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4 pt-1">
+
+          {/* Holding type selector */}
+          {!isEdit && (
+            <div className="space-y-1.5">
+              <Label>Holding type</Label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { value: 'mutual_fund', label: 'Mutual Fund', desc: 'SIP / lump sum MF' },
+                  { value: 'stock', label: 'Stock / ETF', desc: 'NSE listed equity' },
+                  { value: 'other', label: 'Other', desc: 'Gold, FD, REIT…' },
+                ].map(opt => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => { setHoldingType(opt.value); setSelectedFund(null); setMfSearch(''); setStockSymbol('') }}
+                    className={`rounded-xl border p-3 text-left transition-all ${holdingType === opt.value ? 'border-trust bg-trust/5 ring-1 ring-trust' : 'border-border hover:border-trust/40'}`}
+                  >
+                    <p className="text-xs font-semibold">{opt.label}</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">{opt.desc}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Mutual Fund search */}
+          {holdingType === 'mutual_fund' && !isEdit && (
+            <div className="space-y-1.5">
+              <Label>Search fund by name <span className="text-destructive">*</span></Label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  className="pl-9 pr-8"
+                  placeholder="e.g. Parag Parikh Flexi Cap"
+                  value={mfSearch}
+                  onChange={e => { setMfSearch(e.target.value); if (selectedFund) clearFund() }}
+                />
+                {mfSearching && <RefreshCw className="absolute right-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                {selectedFund && !mfSearching && (
+                  <button type="button" onClick={clearFund} className="absolute right-3 top-1/2 -translate-y-1/2">
+                    <X className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
+                  </button>
+                )}
+              </div>
+              {mfResults.length > 0 && !selectedFund && (
+                <div className="rounded-xl border border-border bg-card shadow-md overflow-hidden max-h-48 overflow-y-auto z-50">
+                  {mfResults.map(f => (
+                    <button
+                      key={f.schemeCode}
+                      type="button"
+                      onClick={() => selectFund(f)}
+                      className="w-full text-left px-3 py-2.5 hover:bg-muted/50 text-sm border-b border-border/40 last:border-0"
+                    >
+                      <p className="font-medium leading-snug">{f.schemeName}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">Scheme: {f.schemeCode}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {selectedFund && (
+                <div className="rounded-lg bg-growth/10 border border-growth/30 px-3 py-2 text-xs text-growth font-medium flex items-center gap-1.5">
+                  ✓ Selected: {selectedFund.schemeName} (#{selectedFund.schemeCode})
+                </div>
+              )}
+              {mfSearch.length >= 3 && !mfSearching && mfResults.length === 0 && !selectedFund && (
+                <p className="text-xs text-muted-foreground">No funds found. Try a different name.</p>
+              )}
+            </div>
+          )}
+
+          {/* Stock NSE symbol */}
+          {holdingType === 'stock' && (
+            <div className="space-y-1.5">
+              <Label>NSE Symbol <span className="text-destructive">*</span></Label>
+              <Input
+                placeholder="e.g. RELIANCE, TCS, INFY, NIFTY50-BEES"
+                value={stockSymbol}
+                onChange={e => setStockSymbol(e.target.value.toUpperCase())}
+              />
+              <p className="text-xs text-muted-foreground">Enter the exact NSE ticker. Live prices will be fetched from Yahoo Finance.</p>
+            </div>
+          )}
+
+          {/* Instrument name (manual for other/stock, auto-filled for MF) */}
+          {(holdingType !== 'mutual_fund' || isEdit) && (
+            <div className="space-y-1.5">
               <Label>Instrument name</Label>
-              <Input placeholder="e.g. Mirae Asset Large Cap Fund" {...register('instrument_name')} />
+              <Input placeholder="e.g. Reliance Industries" {...register('instrument_name')} />
               {errors.instrument_name && <p className="text-xs text-destructive">{errors.instrument_name.message}</p>}
             </div>
-            <div className="space-y-1">
-              <Label>Ticker / ISIN (optional)</Label>
-              <Input placeholder="e.g. NSEI" {...register('ticker')} />
-            </div>
-            <div className="space-y-1">
+          )}
+          {holdingType === 'mutual_fund' && !isEdit && (
+            <input type="hidden" {...register('instrument_name')} />
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
               <Label>Asset class</Label>
               <Controller
                 name="asset_class"
@@ -115,26 +298,31 @@ function HoldingDialog({ open, onOpenChange, editHolding }) {
                 )}
               />
             </div>
-            <div className="space-y-1">
-              <Label>Units</Label>
+            <div className="space-y-1.5">
+              <Label>Units / Quantity</Label>
               <Input type="number" step="0.001" placeholder="0" {...register('units')} />
               {errors.units && <p className="text-xs text-destructive">{errors.units.message}</p>}
             </div>
-            <div className="space-y-1">
-              <Label>Avg buy price (₹)</Label>
+            <div className="space-y-1.5">
+              <Label>{holdingType === 'mutual_fund' ? 'Avg buy NAV (₹)' : 'Avg buy price (₹)'}</Label>
               <Input type="number" step="0.01" placeholder="0" {...register('avg_buy_price')} />
               {errors.avg_buy_price && <p className="text-xs text-destructive">{errors.avg_buy_price.message}</p>}
             </div>
-            <div className="space-y-1 col-span-2">
+            <div className="space-y-1.5">
               <Label>Total invested (₹)</Label>
-              <Input type="number" placeholder="0" {...register('total_invested')} />
+              <Input type="number" placeholder="Auto-calculated" {...register('total_invested')} />
               {errors.total_invested && <p className="text-xs text-destructive">{errors.total_invested.message}</p>}
             </div>
           </div>
+
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={isPending} className="bg-trust hover:bg-trust/90 text-white">
-              {isPending ? 'Saving…' : isEdit ? 'Update' : 'Add'}
+            <Button
+              type="submit"
+              disabled={isPending || (holdingType === 'mutual_fund' && !isEdit && !selectedFund)}
+              className="bg-trust hover:bg-trust/90 text-white"
+            >
+              {isPending ? 'Saving…' : isEdit ? 'Update' : 'Add Holding'}
             </Button>
           </DialogFooter>
         </form>
@@ -143,10 +331,10 @@ function HoldingDialog({ open, onOpenChange, editHolding }) {
   )
 }
 
+// ── Drift Banner ──────────────────────────────────────────────────────────────
 function DriftBanner({ drifts }) {
   const flagged = drifts.filter((d) => Math.abs(d.drift) > 5)
   if (!flagged.length) return null
-
   return (
     <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 flex gap-3 items-start">
       <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
@@ -165,28 +353,28 @@ function DriftBanner({ drifts }) {
   )
 }
 
+// ── Page ──────────────────────────────────────────────────────────────────────
 export default function PortfolioTrackerPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editHolding, setEditHolding] = useState(null)
-  const [mockPrices, setMockPrices] = useState({})
   const [refreshing, setRefreshing] = useState(false)
+  const [refreshStatus, setRefreshStatus] = useState({}) // {id: 'ok'|'error'|'pending'}
 
   const { data: holdings = [], isLoading } = useHoldings()
   const { data: riskProfile } = useRiskProfile()
+  const { user } = useAuth()
+  const qc = useQueryClient()
 
-  const targetAllocation = useMemo(() => {
-    if (!riskProfile?.allocation) return {}
-    return riskProfile.allocation
-  }, [riskProfile])
+  const targetAllocation = useMemo(() => riskProfile?.allocation ?? {}, [riskProfile])
 
   const { rows, totalCurrentValue, totalInvested, absoluteGain, returnPct } = useMemo(
-    () => portfolioReturns(holdings, mockPrices),
-    [holdings, mockPrices]
+    () => portfolioReturns(holdings, {}),
+    [holdings]
   )
 
   const drifts = useMemo(
-    () => assetClassDrift(holdings.map((h) => ({ ...h, current_price: mockPrices[h.id] ?? h.current_price })), targetAllocation),
-    [holdings, mockPrices, targetAllocation]
+    () => assetClassDrift(holdings, targetAllocation),
+    [holdings, targetAllocation]
   )
 
   const donutData = Object.entries(
@@ -196,42 +384,69 @@ export default function PortfolioTrackerPage() {
     }, {})
   ).map(([key, value]) => ({ name: CLASS_LABELS[key] ?? key, value, color: CLASS_COLORS[key] ?? '#999' }))
 
-  function handleRefresh() {
+  async function handleRefresh() {
+    if (!holdings.length) return
     setRefreshing(true)
-    setTimeout(() => {
-      setMockPrices(mockRefreshedPrices(holdings))
+    const holdingsWithTicker = holdings.filter(h => h.ticker)
+    if (!holdingsWithTicker.length) {
+      toast.error('No holdings have a ticker/scheme code set. Edit a holding to add one.')
       setRefreshing(false)
-    }, 800)
+      return
+    }
+
+    const status = {}
+    holdingsWithTicker.forEach(h => { status[h.id] = 'pending' })
+    setRefreshStatus({ ...status })
+
+    let updated = 0, failed = 0
+    await Promise.all(holdingsWithTicker.map(async (h) => {
+      try {
+        const price = await fetchLivePrice(h)
+        if (price !== null && price > 0) {
+          await dbUpdateHolding(h.id, { current_price: price, last_price_update: new Date().toISOString() })
+          setRefreshStatus(s => ({ ...s, [h.id]: 'ok' }))
+          updated++
+        } else {
+          setRefreshStatus(s => ({ ...s, [h.id]: 'error' }))
+          failed++
+        }
+      } catch {
+        setRefreshStatus(s => ({ ...s, [h.id]: 'error' }))
+        failed++
+      }
+    }))
+
+    qc.invalidateQueries({ queryKey: ['holdings', user?.id] })
+    setRefreshing(false)
+
+    if (updated > 0 && failed === 0) toast.success(`Live prices updated for ${updated} holding${updated > 1 ? 's' : ''}.`)
+    else if (updated > 0) toast.success(`Updated ${updated} holding${updated > 1 ? 's' : ''}. ${failed} failed — check ticker symbols.`)
+    else toast.error('Could not fetch prices. Check your internet connection or ticker symbols.')
   }
 
-  function openAdd() {
-    setEditHolding(null)
-    setDialogOpen(true)
-  }
+  function openAdd() { setEditHolding(null); setDialogOpen(true) }
+  function openEdit(h) { setEditHolding(h); setDialogOpen(true) }
 
-  function openEdit(h) {
-    setEditHolding(h)
-    setDialogOpen(true)
-  }
+  const canRefresh = holdings.some(h => h.ticker)
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <Link to="/app/trackers" className="text-muted-foreground hover:text-foreground">
             <ArrowLeft className="h-4 w-4" />
           </Link>
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Investment Portfolio</h1>
-            <p className="text-sm text-muted-foreground mt-0.5">Holdings and allocation drift</p>
+            <p className="text-sm text-muted-foreground mt-0.5">Live NAV & market prices · Allocation drift</p>
           </div>
         </div>
         <div className="flex gap-2">
-          {holdings.length > 0 && (
+          {canRefresh && (
             <Button size="sm" variant="outline" className="gap-2" onClick={handleRefresh} disabled={refreshing}>
               <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-              Refresh prices
+              {refreshing ? 'Fetching prices…' : 'Refresh prices'}
             </Button>
           )}
           <Button size="sm" className="bg-trust hover:bg-trust/90 text-white gap-2" onClick={openAdd}>
@@ -239,6 +454,14 @@ export default function PortfolioTrackerPage() {
           </Button>
         </div>
       </div>
+
+      {/* Info banner when no ticker */}
+      {holdings.length > 0 && !canRefresh && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/20 p-4 text-sm text-blue-700 dark:text-blue-400 flex items-start gap-2">
+          <span className="text-base">ℹ️</span>
+          <span>Edit your holdings and select the fund/stock type to enable live price refresh from NSE/AMFI.</span>
+        </div>
+      )}
 
       {/* Hero stats */}
       <div className="grid sm:grid-cols-3 gap-4">
@@ -265,13 +488,13 @@ export default function PortfolioTrackerPage() {
       {drifts.length > 0 && <DriftBanner drifts={drifts} />}
 
       {holdings.length === 0 && !isLoading ? (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
+        <div className="flex flex-col items-center justify-center py-20 text-center">
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-growth/10 mb-4">
             <PieChart className="h-8 w-8 text-growth/60" />
           </div>
           <h3 className="font-semibold mb-2">No holdings yet</h3>
           <p className="text-sm text-muted-foreground max-w-xs mb-5">
-            Add your mutual funds, stocks, or ETFs to track returns and allocation drift.
+            Add your mutual funds, stocks, or ETFs. Live NAV and market prices will be fetched automatically.
           </p>
           <Button onClick={openAdd} className="bg-trust hover:bg-trust/90 text-white gap-2">
             <Plus className="h-4 w-4" /> Add your first holding
@@ -309,7 +532,17 @@ export default function PortfolioTrackerPage() {
 
           {/* Holdings table */}
           <div className={`rounded-2xl border border-border bg-card p-5 ${donutData.length > 0 ? 'lg:col-span-2' : 'lg:col-span-3'}`}>
-            <h2 className="font-semibold text-sm mb-3">Holdings</h2>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-semibold text-sm">Holdings</h2>
+              <p className="text-xs text-muted-foreground">
+                {holdings.filter(h => h.last_price_update && h.ticker).length > 0 && (
+                  <span className="flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    Prices from live market data
+                  </span>
+                )}
+              </p>
+            </div>
             {isLoading
               ? Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 mb-2 rounded-lg" />)
               : (
@@ -329,17 +562,35 @@ export default function PortfolioTrackerPage() {
                     <tbody>
                       {rows.map((h) => {
                         const ret = h.invested > 0 ? ((h.currentValue - h.invested) / h.invested) * 100 : 0
+                        const { type } = parseTicker(h.ticker)
+                        const statusIcon = refreshStatus[h.id] === 'ok' ? '✓' : refreshStatus[h.id] === 'error' ? '✗' : refreshStatus[h.id] === 'pending' ? '…' : null
                         return (
                           <tr key={h.id} className="border-b border-border/50 last:border-0">
                             <td className="py-2.5 pr-3">
-                              <p className="font-medium truncate max-w-[140px]">{h.instrument_name}</p>
-                              <Badge variant="outline" className="text-xs mt-0.5 py-0 capitalize">{h.asset_class}</Badge>
+                              <p className="font-medium truncate max-w-[160px]">{h.instrument_name}</p>
+                              <div className="flex items-center gap-1 mt-0.5">
+                                <Badge variant="outline" className="text-xs py-0 capitalize">{h.asset_class}</Badge>
+                                {type === 'mutual_fund' && <span className="text-[10px] text-muted-foreground">AMFI NAV</span>}
+                                {type === 'stock' && <span className="text-[10px] text-muted-foreground">NSE</span>}
+                                {statusIcon && (
+                                  <span className={`text-[10px] font-bold ${statusIcon === '✓' ? 'text-growth' : statusIcon === '✗' ? 'text-destructive' : 'text-muted-foreground'}`}>
+                                    {statusIcon}
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td className="text-right py-2.5 font-numeric">{Number(h.units).toLocaleString('en-IN')}</td>
-                            <td className="text-right py-2.5 font-numeric">{formatCurrency(h.avg_buy_price)}</td>
-                            <td className="text-right py-2.5 font-numeric">{formatCurrency(h.price)}</td>
+                            <td className="text-right py-2.5 font-numeric text-muted-foreground">{formatCurrency(h.avg_buy_price)}</td>
+                            <td className="text-right py-2.5 font-numeric font-semibold">
+                              {formatCurrency(h.price)}
+                              {h.price !== h.avg_buy_price && (
+                                <span className={`block text-[10px] font-normal ${h.price > h.avg_buy_price ? 'text-growth' : 'text-rose-500'}`}>
+                                  {h.price > h.avg_buy_price ? '▲' : '▼'} live
+                                </span>
+                              )}
+                            </td>
                             <td className="text-right py-2.5 font-numeric font-semibold">{formatCurrency(h.currentValue)}</td>
-                            <td className={`text-right py-2.5 font-numeric text-xs ${ret >= 0 ? 'text-growth' : 'text-rose-500'}`}>
+                            <td className={`text-right py-2.5 font-numeric font-semibold text-sm ${ret >= 0 ? 'text-growth' : 'text-rose-500'}`}>
                               {ret >= 0 ? '+' : ''}{ret.toFixed(1)}%
                             </td>
                             <td className="text-right py-2.5">
@@ -356,6 +607,12 @@ export default function PortfolioTrackerPage() {
                 </div>
               )
             }
+
+            {/* Price source note */}
+            <div className="mt-4 pt-3 border-t border-border/50 text-xs text-muted-foreground space-y-0.5">
+              <p>📊 Mutual fund NAV: sourced from <span className="font-medium">AMFI via mfapi.in</span> · updated daily after market close</p>
+              <p>📈 Stock prices: sourced from <span className="font-medium">NSE via Yahoo Finance</span> · updated during market hours (9:15 AM – 3:30 PM)</p>
+            </div>
           </div>
         </div>
       )}
