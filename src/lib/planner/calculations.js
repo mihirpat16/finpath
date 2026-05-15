@@ -30,6 +30,25 @@ export function lifetimeEarnings(monthly, growthPct, years) {
   return total
 }
 
+export function computeHealthScore(s) {
+  let score = 0
+  const invPct = investmentPct(s)
+  if (invPct >= 40) score += 30
+  else if (invPct >= 30) score += 22
+  else if (invPct >= 20) score += 14
+  else if (invPct >= 10) score += 7
+  if ((s.emi_rent_pct || 0) <= 20) score += 25
+  else if ((s.emi_rent_pct || 0) <= 30) score += 15
+  else if ((s.emi_rent_pct || 0) <= 40) score += 8
+  if ((s.life_insurance_pm || 0) >= 1000) score += 10
+  if ((s.health_insurance_pm || 0) >= 1500) score += 10
+  if ((s.expenses_pct || 0) <= 25) score += 15
+  else if ((s.expenses_pct || 0) <= 35) score += 8
+  if ((s.salary_growth_rate || 0) >= 6) score += 10
+  else if ((s.salary_growth_rate || 0) >= 3) score += 5
+  return Math.min(100, score)
+}
+
 export function buildDashboard(s) {
   const invPct = investmentPct(s)
   const emLiqPct = emergencyLiquidPct(s)

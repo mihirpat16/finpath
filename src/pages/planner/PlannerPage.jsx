@@ -1,29 +1,43 @@
 import { useState, useMemo, useEffect } from 'react'
 import { Helmet } from 'react-helmet-async'
 import { toast } from 'sonner'
-import { Save, Calculator, TrendingUp, Calendar, Receipt, Info } from 'lucide-react'
+import {
+  Save, Calculator, TrendingUp, Calendar, Receipt, Info,
+  Shield, Target, Zap, Award, PiggyBank, Wallet, IndianRupee,
+  Sparkles, BarChart3, ArrowUpRight,
+} from 'lucide-react'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
-import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/format'
 import { usePlannerSettings, useSavePlannerSettings, usePlannerExpenses, useSaveExpense } from '@/hooks/usePlanner'
-import { buildDashboard, investmentPct, emergencyLiquidPct, IDEAL } from '@/lib/planner/calculations'
+import {
+  buildDashboard, investmentPct, emergencyLiquidPct,
+  IDEAL, fv, computeHealthScore,
+} from '@/lib/planner/calculations'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const CURRENT_YEAR = new Date().getFullYear()
 const YEARS = [CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1]
 
 const EXPENSE_CATS = [
-  'Electricity', 'Medical', 'Grocery', 'Festival / Gifts', 'Clothes',
-  'Accessories', 'Electronics / Gadgets', 'Dining Out', 'Transport / Fuel',
-  'Personal Care', 'Subscriptions', 'Miscellaneous',
+  { name: 'Electricity', icon: '⚡' },
+  { name: 'Medical', icon: '🏥' },
+  { name: 'Grocery', icon: '🛒' },
+  { name: 'Festival / Gifts', icon: '🎁' },
+  { name: 'Clothes', icon: '👕' },
+  { name: 'Accessories', icon: '👜' },
+  { name: 'Electronics / Gadgets', icon: '📱' },
+  { name: 'Dining Out', icon: '🍽️' },
+  { name: 'Transport / Fuel', icon: '⛽' },
+  { name: 'Personal Care', icon: '💆' },
+  { name: 'Subscriptions', icon: '📺' },
+  { name: 'Miscellaneous', icon: '📦' },
 ]
 
 const DEFAULT = {
@@ -34,39 +48,116 @@ const DEFAULT = {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function pctColor(value, ideal) {
+function statusColor(value, ideal) {
   const diff = Math.abs(value - ideal)
-  if (diff <= 2) return 'text-growth'
-  if (diff <= 5) return 'text-amber-500'
-  return 'text-destructive'
+  if (diff <= 2) return { text: 'text-growth', badge: 'bg-growth/10 text-growth' }
+  if (diff <= 5) return { text: 'text-amber-500', badge: 'bg-amber-50 dark:bg-amber-950/30 text-amber-600' }
+  return { text: 'text-destructive', badge: 'bg-destructive/10 text-destructive' }
 }
 
-function AllocationSlider({ label, value, ideal, onChange, max = 60 }) {
+// ── Score Ring (SVG circle) ───────────────────────────────────────────────────
+function ScoreRing({ score }) {
+  const r = 36
+  const circ = 2 * Math.PI * r
+  const offset = circ - (score / 100) * circ
+  const color = score >= 80 ? '#10B981' : score >= 60 ? '#0891B2' : score >= 40 ? '#F59E0B' : '#EF4444'
+  const label = score >= 80 ? 'Excellent' : score >= 60 ? 'Good' : score >= 40 ? 'Fair' : 'Needs Work'
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <Label className="text-sm font-medium">{label}</Label>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Ideal: {ideal}%</span>
-          <span className={cn('text-sm font-bold font-numeric w-10 text-right', pctColor(value, ideal))}>{value}%</span>
+    <div className="flex flex-col items-center gap-1.5">
+      <div className="relative w-24 h-24">
+        <svg className="w-24 h-24 -rotate-90" viewBox="0 0 80 80">
+          <circle cx="40" cy="40" r={r} fill="none" stroke="currentColor" className="text-muted/40" strokeWidth="7" />
+          <circle
+            cx="40" cy="40" r={r} fill="none" stroke={color} strokeWidth="7"
+            strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
+            style={{ transition: 'stroke-dashoffset 0.9s ease' }}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-2xl font-bold leading-none" style={{ color }}>{score}</span>
+          <span className="text-[10px] text-muted-foreground">/ 100</span>
+        </div>
+      </div>
+      <span className="text-xs font-semibold" style={{ color }}>{label}</span>
+    </div>
+  )
+}
+
+// ── Stacked Budget Bar ────────────────────────────────────────────────────────
+function BudgetBar({ rows }) {
+  const COLORS = ['bg-blue-500', 'bg-violet-500', 'bg-amber-400', 'bg-pink-500', 'bg-emerald-500']
+  return (
+    <div className="space-y-3">
+      <div className="flex h-5 rounded-full overflow-hidden gap-0.5">
+        {rows.map((r, i) => r.pct > 0 && (
+          <div
+            key={r.label}
+            style={{ width: `${r.pct}%` }}
+            className={cn('h-full transition-all duration-500', COLORS[i])}
+            title={`${r.label}: ${r.pct}%`}
+          />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+        {rows.map((r, i) => (
+          <div key={r.label} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className={cn('w-2 h-2 rounded-full flex-shrink-0', COLORS[i])} />
+            <span>{r.emoji} {r.label}</span>
+            <span className="font-bold text-foreground">{r.pct}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Enhanced Allocation Slider ─────────────────────────────────────────────────
+function AllocSlider({ label, value, ideal, salary, onChange, max = 60, info }) {
+  const col = statusColor(value, ideal)
+  const monthlyAmt = Math.round((salary * value) / 100)
+  return (
+    <div className="space-y-2 p-4 rounded-xl border border-border bg-card/60 hover:bg-card transition-colors">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold truncate">{label}</p>
+          {info && <p className="text-xs text-muted-foreground mt-0.5">{info}</p>}
+        </div>
+        <div className="text-right flex-shrink-0">
+          <span className={cn('text-xl font-bold font-numeric', col.text)}>{value}%</span>
+          {salary > 0 && <p className="text-xs text-muted-foreground">{formatCurrency(monthlyAmt, 'INR')}/mo</p>}
         </div>
       </div>
       <Slider value={[value]} onValueChange={([v]) => onChange(v)} min={0} max={max} step={1} />
+      <div className="flex justify-between text-xs">
+        <span className="text-muted-foreground">Ideal: <span className="font-semibold text-foreground">{ideal}%</span></span>
+        <span className={cn('font-medium px-1.5 py-0.5 rounded-full text-[11px]', col.badge)}>
+          {value === ideal ? '✓ On target' : value < ideal ? `${ideal - value}% below` : `${value - ideal}% above`}
+        </span>
+      </div>
     </div>
   )
 }
 
-function MetricCard({ label, value, sub, color = 'text-trust' }) {
+// ── Health Pillar Row ─────────────────────────────────────────────────────────
+function HealthPillar({ label, score, max, icon: Icon }) {
+  const pct = Math.round((score / max) * 100)
+  const barColor = pct >= 80 ? 'bg-growth' : pct >= 50 ? 'bg-amber-400' : 'bg-destructive'
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <p className="text-xs text-muted-foreground mb-1">{label}</p>
-      <p className={cn('text-lg font-bold font-numeric leading-tight', color)}>{value}</p>
-      {sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between text-xs">
+        <span className="flex items-center gap-1.5 text-muted-foreground">
+          <Icon className="h-3 w-3" /> {label}
+        </span>
+        <span className="font-bold text-foreground">{score}<span className="text-muted-foreground font-normal">/{max}</span></span>
+      </div>
+      <div className="h-2 rounded-full bg-muted overflow-hidden">
+        <div className={cn('h-full rounded-full transition-all duration-700', barColor)} style={{ width: `${pct}%` }} />
+      </div>
     </div>
   )
 }
 
-// ── Tab 1: Setup ──────────────────────────────────────────────────────────────
+// ── Setup Tab ─────────────────────────────────────────────────────────────────
 function SetupTab({ settings, onSave, saving }) {
   const [form, setForm] = useState({ ...DEFAULT, ...settings })
   useEffect(() => { if (settings) setForm(f => ({ ...f, ...settings })) }, [settings])
@@ -75,357 +166,532 @@ function SetupTab({ settings, onSave, saving }) {
   const emLiqPct = emergencyLiquidPct(form)
   const budgetTotal = form.expenses_pct + form.emi_rent_pct + form.donations_pct + form.vacation_pct + invPct
   const invSubTotal = form.equity_mf_pct + form.ppf_epf_pct + form.nps_pct + form.direct_stocks_pct + emLiqPct
+  const isBalanced = Math.round(budgetTotal) === 100
+  const isInvBalanced = Math.round(invSubTotal) === 100
+  const monthlyInvest = Math.round(((form.monthly_salary || 0) * invPct) / 100)
 
   function set(key, val) { setForm(prev => ({ ...prev, [key]: Number(val) })) }
 
   function handleSave() {
     if (!form.monthly_salary || form.monthly_salary <= 0) return toast.error('Please enter your monthly salary.')
-    if (Math.round(budgetTotal) !== 100) return toast.error('Budget allocation must total 100%.')
-    if (Math.round(invSubTotal) !== 100) return toast.error('Investment sub-allocation must total 100%.')
+    if (!isBalanced) return toast.error(`Budget total is ${Math.round(budgetTotal)}% — must equal 100%.`)
+    if (!isInvBalanced) return toast.error(`Investment sub-total is ${Math.round(invSubTotal)}% — must equal 100%.`)
     onSave({ ...form, emergency_liquid_pct: emLiqPct })
   }
 
+  const budgetBarRows = [
+    { label: 'Expenses', emoji: '🛒', pct: form.expenses_pct },
+    { label: 'EMI/Rent', emoji: '🏠', pct: form.emi_rent_pct },
+    { label: 'Donations', emoji: '💝', pct: form.donations_pct },
+    { label: 'Vacation', emoji: '✈️', pct: form.vacation_pct },
+    { label: 'Investments', emoji: '📈', pct: invPct },
+  ]
+
   return (
-    <div className="max-w-2xl space-y-8">
+    <div className="max-w-2xl space-y-5">
+
       {/* Income */}
-      <section>
-        <h3 className="font-semibold mb-4 flex items-center gap-2"><span className="text-base">💰</span> Income</h3>
-        <div className="grid sm:grid-cols-2 gap-5">
+      <div className="rounded-2xl border border-trust/20 bg-gradient-to-br from-trust/5 to-background p-5 space-y-4">
+        <h3 className="font-semibold flex items-center gap-2 text-trust">
+          <IndianRupee className="h-4 w-4" /> Income Details
+        </h3>
+        <div className="grid sm:grid-cols-2 gap-4">
           <div className="space-y-1.5">
-            <Label>Monthly Salary (₹) <span className="text-destructive">*</span></Label>
-            <Input
-              type="number" min={0}
-              value={form.monthly_salary || ''}
-              onChange={e => set('monthly_salary', e.target.value)}
-              placeholder="e.g. 50000"
-            />
-            <p className="text-xs text-muted-foreground">Annual: {formatCurrency((form.monthly_salary || 0) * 12, 'INR')}</p>
+            <Label>Monthly Salary <span className="text-destructive">*</span></Label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm font-semibold">₹</span>
+              <Input
+                type="number" min={0} className="pl-7 text-lg font-bold h-12"
+                value={form.monthly_salary || ''}
+                onChange={e => set('monthly_salary', e.target.value)}
+                placeholder="50,000"
+              />
+            </div>
+            {form.monthly_salary > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Annual: <span className="font-semibold text-foreground">{formatCurrency(form.monthly_salary * 12, 'INR')}</span>
+              </p>
+            )}
           </div>
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label>Salary Growth Rate</Label>
-              <span className="text-sm font-bold font-numeric text-trust">{form.salary_growth_rate}%</span>
+            <div className="flex justify-between">
+              <Label>Expected Annual Growth</Label>
+              <span className="text-sm font-bold text-trust">{form.salary_growth_rate}%</span>
             </div>
             <Slider value={[form.salary_growth_rate]} onValueChange={([v]) => set('salary_growth_rate', v)} min={0} max={20} step={0.5} />
-            <p className="text-xs text-muted-foreground">Ideal: 6–8% per year</p>
+            <p className="text-xs text-muted-foreground">Typical for salaried professionals: 6–10%/year</p>
           </div>
         </div>
-      </section>
+      </div>
 
-      <Separator />
-
-      {/* Budget Allocation */}
-      <section>
-        <h3 className="font-semibold mb-1 flex items-center gap-2"><span className="text-base">📊</span> Monthly Budget Allocation</h3>
-        <p className="text-xs text-muted-foreground mb-5">The 4 sliders below control spending. Investments = what&apos;s left over.</p>
-        <div className="space-y-5">
-          <AllocationSlider label="Expenses / Needs" value={form.expenses_pct} ideal={IDEAL.expenses} onChange={v => set('expenses_pct', v)} />
-          <AllocationSlider label="EMI / Rent" value={form.emi_rent_pct} ideal={IDEAL.emiRent} onChange={v => set('emi_rent_pct', v)} />
-          <AllocationSlider label="Donations" value={form.donations_pct} ideal={IDEAL.donations} onChange={v => set('donations_pct', v)} max={20} />
-          <AllocationSlider label="Vacation / Leisure" value={form.vacation_pct} ideal={IDEAL.vacation} onChange={v => set('vacation_pct', v)} />
+      {/* Budget allocation */}
+      <div className="rounded-2xl border border-border bg-card p-5 space-y-4">
+        <div>
+          <h3 className="font-semibold flex items-center gap-2"><BarChart3 className="h-4 w-4 text-trust" /> Monthly Budget Allocation</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">Adjust 4 sliders — investment fills the remainder automatically.</p>
         </div>
+        <BudgetBar rows={budgetBarRows} />
+        <div className="space-y-3 pt-1">
+          <AllocSlider label="Expenses / Needs" value={form.expenses_pct} ideal={IDEAL.expenses} salary={form.monthly_salary} onChange={v => set('expenses_pct', v)} info="Groceries, utilities, daily needs" />
+          <AllocSlider label="EMI / Rent" value={form.emi_rent_pct} ideal={IDEAL.emiRent} salary={form.monthly_salary} onChange={v => set('emi_rent_pct', v)} info="Home loan, vehicle, personal loans" />
+          <AllocSlider label="Donations" value={form.donations_pct} ideal={IDEAL.donations} salary={form.monthly_salary} onChange={v => set('donations_pct', v)} max={20} info="Charity, family support" />
+          <AllocSlider label="Vacation / Leisure" value={form.vacation_pct} ideal={IDEAL.vacation} salary={form.monthly_salary} onChange={v => set('vacation_pct', v)} info="Travel, dining, entertainment" />
+        </div>
+
+        {/* Investment auto box */}
         <div className={cn(
-          'mt-4 rounded-xl border p-4 flex items-center justify-between',
-          invPct >= 38 ? 'border-growth/30 bg-growth/5' : invPct >= 20 ? 'border-amber-300 bg-amber-50 dark:bg-amber-950/20' : 'border-destructive/30 bg-destructive/5',
+          'rounded-xl border p-4 flex items-center justify-between',
+          invPct >= 38 ? 'border-growth/40 bg-gradient-to-r from-growth/10 to-growth/5'
+            : invPct >= 20 ? 'border-amber-300 bg-amber-50/60 dark:bg-amber-950/20'
+              : 'border-destructive/30 bg-destructive/5',
         )}>
-          <span className="text-sm font-medium">📈 Investments (auto)</span>
+          <div className="flex items-center gap-3">
+            <PiggyBank className={cn('h-5 w-5', invPct >= 38 ? 'text-growth' : invPct >= 20 ? 'text-amber-500' : 'text-destructive')} />
+            <div>
+              <p className="text-sm font-semibold">Investments (auto-calculated)</p>
+              <p className="text-xs text-muted-foreground">Ideal target: {IDEAL.investments}% of income</p>
+            </div>
+          </div>
           <div className="text-right">
-            <span className={cn('text-2xl font-bold font-numeric', pctColor(invPct, IDEAL.investments))}>{invPct}%</span>
-            <p className="text-xs text-muted-foreground">= {formatCurrency(Math.round(((form.monthly_salary || 0) * invPct) / 100), 'INR')}/mo · Ideal: {IDEAL.investments}%</p>
+            <p className={cn('text-2xl font-bold font-numeric', invPct >= 38 ? 'text-growth' : invPct >= 20 ? 'text-amber-500' : 'text-destructive')}>{invPct}%</p>
+            {form.monthly_salary > 0 && <p className="text-xs text-muted-foreground">{formatCurrency(monthlyInvest, 'INR')}/mo</p>}
           </div>
         </div>
-        <p className={cn('text-xs mt-2 font-medium', Math.round(budgetTotal) === 100 ? 'text-growth' : 'text-destructive')}>
-          Total: {Math.round(budgetTotal)}% {Math.round(budgetTotal) === 100 ? '✓ Balanced' : '— must equal 100%'}
-        </p>
-      </section>
 
-      <Separator />
-
-      {/* Investment Sub-Allocation */}
-      <section>
-        <h3 className="font-semibold mb-1 flex items-center gap-2"><span className="text-base">💼</span> Investment Sub-Allocation</h3>
-        <p className="text-xs text-muted-foreground mb-5">How to split your investment amount. Emergency / Liquid is auto-calculated.</p>
-        <div className="space-y-5">
-          <AllocationSlider label="Equity Mutual Funds (SIP)" value={form.equity_mf_pct} ideal={73} onChange={v => set('equity_mf_pct', v)} max={100} />
-          <AllocationSlider label="PPF / EPF" value={form.ppf_epf_pct} ideal={12} onChange={v => set('ppf_epf_pct', v)} max={100} />
-          <AllocationSlider label="NPS (National Pension)" value={form.nps_pct} ideal={0} onChange={v => set('nps_pct', v)} max={40} />
-          <AllocationSlider label="Direct Stocks" value={form.direct_stocks_pct} ideal={5} onChange={v => set('direct_stocks_pct', v)} max={50} />
+        <div className={cn('flex items-center gap-2 text-sm font-medium rounded-lg px-3 py-2.5', isBalanced ? 'bg-growth/10 text-growth' : 'bg-destructive/10 text-destructive')}>
+          <span className="text-base">{isBalanced ? '✓' : '✗'}</span>
+          Total: {Math.round(budgetTotal)}% {isBalanced ? '— Perfectly balanced' : '— Must equal 100%'}
         </div>
-        <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 dark:bg-sky-950/20 p-4 flex items-center justify-between">
-          <span className="text-sm font-medium">💧 Emergency / Liquid (auto)</span>
-          <span className={cn('text-2xl font-bold font-numeric', emLiqPct < 0 ? 'text-destructive' : 'text-sky-600')}>{emLiqPct}%</span>
+      </div>
+
+      {/* Investment sub-allocation */}
+      <div className="rounded-2xl border border-border bg-card p-5 space-y-4">
+        <div>
+          <h3 className="font-semibold flex items-center gap-2"><Wallet className="h-4 w-4 text-trust" /> Investment Sub-Allocation</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Split your <span className="font-semibold text-foreground">{formatCurrency(monthlyInvest, 'INR')}/mo</span> across asset classes.
+          </p>
         </div>
-        <p className={cn('text-xs mt-2 font-medium', Math.round(invSubTotal) === 100 ? 'text-growth' : 'text-destructive')}>
-          Total: {Math.round(invSubTotal)}% {Math.round(invSubTotal) === 100 ? '✓ Balanced' : '— must equal 100%'}
-        </p>
-      </section>
+        <div className="space-y-3">
+          <AllocSlider label="Equity Mutual Funds (SIP)" value={form.equity_mf_pct} ideal={73} salary={monthlyInvest} onChange={v => set('equity_mf_pct', v)} max={100} info="12% expected CAGR — long-term wealth engine" />
+          <AllocSlider label="PPF / EPF" value={form.ppf_epf_pct} ideal={12} salary={monthlyInvest} onChange={v => set('ppf_epf_pct', v)} max={100} info="7.7% guaranteed — tax-free, risk-free" />
+          <AllocSlider label="NPS (National Pension)" value={form.nps_pct} ideal={0} salary={monthlyInvest} onChange={v => set('nps_pct', v)} max={40} info="8% expected return + Section 80CCD tax benefit" />
+          <AllocSlider label="Direct Stocks" value={form.direct_stocks_pct} ideal={5} salary={monthlyInvest} onChange={v => set('direct_stocks_pct', v)} max={50} info="High risk, high reward — research required" />
+        </div>
 
-      <Separator />
+        <div className="rounded-xl border border-sky-200 dark:border-sky-800 bg-gradient-to-r from-sky-50 to-blue-50 dark:from-sky-950/30 dark:to-blue-950/20 p-4 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-semibold text-sky-700 dark:text-sky-400">Emergency / Liquid Fund (auto)</p>
+            <p className="text-xs text-muted-foreground">Liquid MFs, savings account — ~5.6% return</p>
+          </div>
+          <p className={cn('text-2xl font-bold font-numeric', emLiqPct < 0 ? 'text-destructive' : 'text-sky-600')}>{emLiqPct}%</p>
+        </div>
 
-      {/* Insurance & Projection */}
-      <section>
-        <h3 className="font-semibold mb-4 flex items-center gap-2"><span className="text-base">🛡️</span> Insurance & Projection</h3>
-        <div className="grid sm:grid-cols-2 gap-5">
+        <div className={cn('flex items-center gap-2 text-sm font-medium rounded-lg px-3 py-2.5', isInvBalanced ? 'bg-growth/10 text-growth' : 'bg-destructive/10 text-destructive')}>
+          <span className="text-base">{isInvBalanced ? '✓' : '✗'}</span>
+          Total: {Math.round(invSubTotal)}% {isInvBalanced ? '— Balanced across all asset classes' : '— Must equal 100%'}
+        </div>
+      </div>
+
+      {/* Protection & projection */}
+      <div className="rounded-2xl border border-border bg-gradient-to-br from-slate-50 to-background dark:from-slate-900/50 dark:to-background p-5 space-y-4">
+        <h3 className="font-semibold flex items-center gap-2"><Shield className="h-4 w-4 text-trust" /> Protection & Projection</h3>
+        <div className="grid sm:grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label>Life Insurance (₹/month)</Label>
-            <Input type="number" min={0} value={form.life_insurance_pm} onChange={e => set('life_insurance_pm', e.target.value)} />
-            <p className="text-xs text-muted-foreground">Ideal: ₹1,500/mo (₹1Cr term plan)</p>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm font-semibold">₹</span>
+              <Input type="number" min={0} className="pl-7" value={form.life_insurance_pm} onChange={e => set('life_insurance_pm', e.target.value)} />
+            </div>
+            <p className="text-xs text-muted-foreground">Recommended: ₹1,500/mo → ₹1 Cr term plan</p>
           </div>
           <div className="space-y-1.5">
             <Label>Health Insurance (₹/month)</Label>
-            <Input type="number" min={0} value={form.health_insurance_pm} onChange={e => set('health_insurance_pm', e.target.value)} />
-            <p className="text-xs text-muted-foreground">Ideal: ₹2,500/mo (family floater)</p>
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label>Projection Years</Label>
-              <span className="text-sm font-bold font-numeric text-trust">{form.projection_years} yrs</span>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm font-semibold">₹</span>
+              <Input type="number" min={0} className="pl-7" value={form.health_insurance_pm} onChange={e => set('health_insurance_pm', e.target.value)} />
             </div>
-            <Slider value={[form.projection_years]} onValueChange={([v]) => set('projection_years', v)} min={5} max={30} step={1} />
+            <p className="text-xs text-muted-foreground">Recommended: ₹2,500/mo family floater</p>
           </div>
         </div>
-      </section>
+        <div className="space-y-2">
+          <div className="flex justify-between items-center">
+            <Label>Projection Horizon</Label>
+            <span className="text-lg font-bold text-trust">{form.projection_years} years</span>
+          </div>
+          <Slider value={[form.projection_years]} onValueChange={([v]) => set('projection_years', v)} min={5} max={30} step={1} />
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>5 yrs (short)</span>
+            <span>15 yrs (ideal)</span>
+            <span>30 yrs (long)</span>
+          </div>
+        </div>
+      </div>
 
-      <Button onClick={handleSave} disabled={saving} className="bg-trust hover:bg-trust/90 text-white gap-2 w-full sm:w-auto">
-        <Save className="h-4 w-4" /> {saving ? 'Saving…' : 'Save settings'}
+      <Button onClick={handleSave} disabled={saving} size="lg" className="bg-trust hover:bg-trust/90 text-white gap-2 w-full">
+        <Save className="h-4 w-4" /> {saving ? 'Saving…' : 'Save & Build My Plan'}
       </Button>
     </div>
   )
 }
 
-// ── Tab 2: Dashboard ──────────────────────────────────────────────────────────
+// ── Personalized Tips ──────────────────────────────────────────────────────────
+function PersonalizedTips({ settings, dash }) {
+  const tips = useMemo(() => {
+    const t = []
+    if (dash.invPct < 30) t.push({
+      icon: TrendingUp, colorClass: 'text-amber-600 bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800',
+      title: 'Boost your savings rate',
+      body: `You're investing ${dash.invPct}% of income. Aim for 40%+ — even 5% more per month compounds into lakhs over ${settings.projection_years} years.`,
+    })
+    if ((settings.emi_rent_pct || 0) > 35) t.push({
+      icon: Target, colorClass: 'text-red-600 bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800',
+      title: 'High debt load detected',
+      body: `EMI/Rent at ${settings.emi_rent_pct}% exceeds the 20% guideline. Consider prepaying loans early or refinancing for lower EMIs.`,
+    })
+    if ((settings.life_insurance_pm || 0) < 1000) t.push({
+      icon: Shield, colorClass: 'text-blue-600 bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800',
+      title: 'Add life insurance',
+      body: "A ₹1 Cr term plan costs only ₹1,000–1,500/month. It's the most important financial protection for your family.",
+    })
+    if ((settings.health_insurance_pm || 0) < 1500) t.push({
+      icon: Shield, colorClass: 'text-violet-600 bg-violet-50 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800',
+      title: 'Get health insurance',
+      body: 'One hospitalisation can erase years of savings. A ₹10L family floater costs ~₹2,000–2,500/month and is non-negotiable.',
+    })
+    if ((settings.equity_mf_pct || 0) < 60 && dash.invPct > 20) t.push({
+      icon: Sparkles, colorClass: 'text-growth bg-growth/10 border-growth/30',
+      title: 'Increase equity exposure',
+      body: `Equity MFs have delivered 12%+ CAGR over 10+ years. With a ${settings.projection_years}-year horizon, higher equity allocation can dramatically grow your corpus.`,
+    })
+    if (t.length === 0) t.push({
+      icon: Award, colorClass: 'text-growth bg-growth/10 border-growth/30',
+      title: 'Excellent financial discipline!',
+      body: 'Your plan is well-balanced across all pillars. Keep investing consistently and review annually as your income and goals evolve.',
+    })
+    return t.slice(0, 3)
+  }, [settings, dash])
+
+  return (
+    <div className="space-y-3">
+      <h3 className="font-semibold text-sm flex items-center gap-2"><Sparkles className="h-4 w-4 text-trust" /> Personalized Insights</h3>
+      <div className="space-y-3">
+        {tips.map((tip, i) => (
+          <div key={i} className={cn('rounded-xl border p-4 flex gap-3', tip.colorClass)}>
+            <tip.icon className="h-4 w-4 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-semibold">{tip.title}</p>
+              <p className="text-xs mt-0.5 opacity-80 leading-relaxed">{tip.body}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Dashboard Tab ─────────────────────────────────────────────────────────────
 function DashboardTab({ settings }) {
   const dash = useMemo(() => settings ? buildDashboard(settings) : null, [settings])
+  const healthScore = useMemo(() => settings ? computeHealthScore(settings) : null, [settings])
 
   if (!settings) return (
-    <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-5 text-sm text-amber-800 dark:text-amber-300">
-      <Info className="inline h-4 w-4 mr-1.5 align-text-bottom" />
-      Complete the <strong>Setup</strong> tab first to see your financial dashboard.
+    <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-background dark:from-amber-950/20 dark:to-background p-10 text-center space-y-3">
+      <div className="w-14 h-14 rounded-2xl bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center mx-auto">
+        <Calculator className="h-7 w-7 text-amber-600" />
+      </div>
+      <h3 className="font-semibold text-lg">Setup required</h3>
+      <p className="text-sm text-muted-foreground max-w-sm mx-auto">Complete the <strong>Setup</strong> tab with your income and budget preferences to see your personalized financial dashboard.</p>
     </div>
   )
 
+  const yr5 = Math.round(fv(dash.monthlyInvest, 5, 12))
+  const yr10 = Math.round(fv(dash.monthlyInvest, 10, 12))
+
+  const invRatioScore = dash.invPct >= 40 ? 30 : dash.invPct >= 30 ? 22 : dash.invPct >= 20 ? 14 : 7
+  const emiScore = (settings.emi_rent_pct || 0) <= 20 ? 25 : (settings.emi_rent_pct || 0) <= 30 ? 15 : (settings.emi_rent_pct || 0) <= 40 ? 8 : 0
+  const lifeIns = (settings.life_insurance_pm || 0) >= 1000 ? 10 : 0
+  const healthIns = (settings.health_insurance_pm || 0) >= 1500 ? 10 : 0
+  const expScore = (settings.expenses_pct || 0) <= 25 ? 15 : (settings.expenses_pct || 0) <= 35 ? 8 : 0
+  const growthScore = (settings.salary_growth_rate || 0) >= 6 ? 10 : (settings.salary_growth_rate || 0) >= 3 ? 5 : 0
+
   return (
-    <div className="space-y-7">
-      {/* Key metrics */}
-      <div>
-        <h3 className="font-semibold text-sm mb-3 text-muted-foreground uppercase tracking-wide">Key Metrics</h3>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <MetricCard label="Monthly Salary" value={formatCurrency(settings.monthly_salary, 'INR')} />
-          <MetricCard label="Annual Salary" value={formatCurrency(dash.annualSalary, 'INR')} />
-          <MetricCard label="Monthly Investment" value={formatCurrency(dash.monthlyInvest, 'INR')} color="text-growth" />
-          <MetricCard label="Investment Ratio" value={`${dash.invPct}%`} sub="of monthly salary" color={pctColor(dash.invPct, IDEAL.investments)} />
-          <MetricCard label="Return (CAGR)" value={`${12}%`} sub="expected annual return" />
-          <MetricCard label="Real Return" value={`${dash.realReturn}%`} sub="after 6% inflation" color="text-amber-500" />
+    <div className="space-y-6">
+
+      {/* Corpus hero */}
+      <div className="rounded-2xl bg-gradient-to-br from-trust via-trust/90 to-[#1a3a5c] p-6 text-white relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-56 h-56 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/4 pointer-events-none" />
+        <div className="absolute bottom-0 left-8 w-36 h-36 bg-white/5 rounded-full translate-y-1/2 pointer-events-none" />
+        <div className="relative">
+          <p className="text-white/70 text-sm font-medium flex items-center gap-1.5">
+            <Sparkles className="h-4 w-4" /> Projected Wealth in {settings.projection_years} Years
+          </p>
+          <p className="text-4xl sm:text-5xl font-bold font-numeric mt-1.5 mb-4 tracking-tight">
+            {formatCurrency(dash.totalCorpus, 'INR')}
+          </p>
+          <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm border-t border-white/20 pt-4">
+            {[
+              { label: 'Total invested', value: formatCurrency(dash.totalInvested, 'INR') },
+              { label: 'Wealth multiplier', value: dash.totalInvested > 0 ? `${(dash.totalCorpus / dash.totalInvested).toFixed(1)}×` : '—' },
+              { label: 'Lifetime earnings', value: formatCurrency(dash.lifetimeEarnings, 'INR') },
+            ].map(m => (
+              <div key={m.label}>
+                <p className="text-white/60 text-xs">{m.label}</p>
+                <p className="font-semibold">{m.value}</p>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* Budget allocation table */}
-      <div className="rounded-2xl border border-border bg-card overflow-hidden">
-        <div className="bg-trust px-5 py-3">
-          <h3 className="text-sm font-semibold text-white">📊 Budget Allocation Overview</h3>
+      {/* 3 key metrics */}
+      <div className="grid grid-cols-3 gap-3">
+        {[
+          { label: 'Monthly Investment', value: formatCurrency(dash.monthlyInvest, 'INR'), sub: `${dash.invPct}% of salary`, color: 'text-growth', icon: TrendingUp, iconColor: 'text-growth' },
+          { label: 'Expected CAGR', value: '12%', sub: `Real return: ${dash.realReturn}% (post-inflation)`, color: 'text-trust', icon: ArrowUpRight, iconColor: 'text-trust' },
+          { label: 'Annual Salary', value: formatCurrency(dash.annualSalary, 'INR'), sub: `${formatCurrency(settings.monthly_salary, 'INR')}/month`, color: 'text-foreground', icon: IndianRupee, iconColor: 'text-muted-foreground' },
+        ].map(m => (
+          <div key={m.label} className="rounded-xl border border-border bg-card p-4 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">{m.label}</p>
+              <m.icon className={cn('h-3.5 w-3.5', m.iconColor)} />
+            </div>
+            <p className={cn('text-base font-bold font-numeric leading-tight', m.color)}>{m.value}</p>
+            <p className="text-xs text-muted-foreground leading-tight">{m.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Financial Health Score */}
+      <div className="rounded-2xl border border-border bg-card p-5">
+        <h3 className="font-semibold flex items-center gap-2 mb-5"><Award className="h-4 w-4 text-trust" /> Financial Health Score</h3>
+        <div className="flex flex-col sm:flex-row gap-6 items-center sm:items-start">
+          <div className="flex-shrink-0">
+            <ScoreRing score={healthScore} />
+          </div>
+          <div className="flex-1 space-y-3 w-full">
+            <HealthPillar label="Investment ratio" score={invRatioScore} max={30} icon={TrendingUp} />
+            <HealthPillar label="Debt management" score={emiScore} max={25} icon={Target} />
+            <HealthPillar label="Life insurance" score={lifeIns} max={10} icon={Shield} />
+            <HealthPillar label="Health insurance" score={healthIns} max={10} icon={Shield} />
+            <HealthPillar label="Expense control" score={expScore} max={15} icon={Receipt} />
+            <HealthPillar label="Salary growth" score={growthScore} max={10} icon={Zap} />
+          </div>
         </div>
+      </div>
+
+      {/* Budget allocation */}
+      <div className="rounded-2xl border border-border bg-card p-5 space-y-4">
+        <h3 className="font-semibold flex items-center gap-2"><BarChart3 className="h-4 w-4 text-trust" /> Budget Allocation</h3>
+        <BudgetBar rows={dash.budgetRows} />
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border bg-muted/50">
-                <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Category</th>
-                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Monthly (₹)</th>
-                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Annual (₹)</th>
-                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">% of Income</th>
+              <tr className="border-b border-border">
+                <th className="text-left py-2 text-xs font-medium text-muted-foreground">Category</th>
+                <th className="text-right py-2 text-xs font-medium text-muted-foreground">%</th>
+                <th className="text-right py-2 text-xs font-medium text-muted-foreground">Monthly</th>
+                <th className="text-right py-2 text-xs font-medium text-muted-foreground">Annual</th>
               </tr>
             </thead>
             <tbody>
               {dash.budgetRows.map((r, i) => (
-                <tr key={r.label} className={cn('border-b border-border/50 last:border-0', i === 4 && 'font-semibold bg-growth/5')}>
-                  <td className="px-4 py-2.5">{r.emoji} {r.label}</td>
-                  <td className="px-4 py-2.5 text-right font-numeric">{formatCurrency(r.monthly, 'INR')}</td>
-                  <td className="px-4 py-2.5 text-right font-numeric">{formatCurrency(r.annual, 'INR')}</td>
-                  <td className="px-4 py-2.5 text-right font-numeric">{r.pct}%</td>
+                <tr key={r.label} className={cn('border-b border-border/40 last:border-0', i === 4 && 'font-semibold bg-growth/5')}>
+                  <td className="py-2 text-sm">{r.emoji} {r.label}</td>
+                  <td className="py-2 text-right text-xs font-numeric text-muted-foreground">{r.pct}%</td>
+                  <td className="py-2 text-right font-numeric font-medium">{formatCurrency(r.monthly, 'INR')}</td>
+                  <td className="py-2 text-right font-numeric text-muted-foreground">{formatCurrency(r.annual, 'INR')}</td>
                 </tr>
               ))}
-              <tr className="bg-trust/5 font-bold border-t-2 border-trust/20">
-                <td className="px-4 py-2.5">TOTAL ALLOCATED</td>
-                <td className="px-4 py-2.5 text-right font-numeric">{formatCurrency(settings.monthly_salary, 'INR')}</td>
-                <td className="px-4 py-2.5 text-right font-numeric">{formatCurrency(dash.annualSalary, 'INR')}</td>
-                <td className="px-4 py-2.5 text-right font-numeric text-growth">{dash.allocationCheck}%</td>
-              </tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* 15-year projection */}
-      <div>
-        <h3 className="font-semibold text-sm mb-3 text-muted-foreground uppercase tracking-wide">🚀 {settings.projection_years}-Year Wealth Projection</h3>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <MetricCard label={`Corpus at Yr ${settings.projection_years}`} value={formatCurrency(dash.totalCorpus, 'INR')} color="text-growth" />
-          <MetricCard label="Total Invested" value={formatCurrency(dash.totalInvested, 'INR')} />
-          <MetricCard label="Lifetime Earnings" value={formatCurrency(dash.lifetimeEarnings, 'INR')} />
-          <MetricCard label="Equity SIP Corpus" value={formatCurrency(dash.equitySIP15yr, 'INR')} color="text-trust" />
-          <MetricCard label="PPF/EPF Corpus" value={formatCurrency(dash.ppfEpf15yr, 'INR')} />
-          <MetricCard label="Emergency Fund Target" value={formatCurrency(dash.emergencyFundTarget, 'INR')} color="text-amber-500" />
+      {/* Wealth milestones */}
+      <div className="space-y-3">
+        <h3 className="font-semibold text-sm flex items-center gap-2"><Target className="h-4 w-4 text-trust" /> Wealth Milestones</h3>
+        <div className="grid grid-cols-3 gap-3">
+          {[
+            { yr: 5, corpus: yr5, gradient: 'from-sky-500 to-blue-600' },
+            { yr: 10, corpus: yr10, gradient: 'from-violet-500 to-purple-700' },
+            { yr: settings.projection_years, corpus: dash.totalCorpus, gradient: 'from-emerald-500 to-teal-700' },
+          ].map(m => (
+            <div key={m.yr} className={cn('rounded-xl bg-gradient-to-br p-4 text-white', m.gradient)}>
+              <p className="text-white/70 text-xs font-medium">{m.yr}-Year Goal</p>
+              <p className="text-xl font-bold font-numeric mt-1 leading-tight">{formatCurrency(m.corpus, 'INR')}</p>
+              <p className="text-white/60 text-xs mt-1 font-numeric">
+                {m.corpus >= 10000000 ? `${(m.corpus / 10000000).toFixed(1)} Cr` : `${(m.corpus / 100000).toFixed(0)} L`}
+              </p>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Protection overview */}
-      <div>
-        <h3 className="font-semibold text-sm mb-3 text-muted-foreground uppercase tracking-wide">🛡️ Protection & Emergency</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <MetricCard label="Life Insurance/mo" value={formatCurrency(settings.life_insurance_pm, 'INR')} />
-          <MetricCard label="Health Insurance/mo" value={formatCurrency(settings.health_insurance_pm, 'INR')} />
-          <MetricCard label="Annual Health Cost" value={formatCurrency(settings.health_insurance_pm * 12, 'INR')} />
-          <MetricCard label="Emergency Fund (months)" value="12 months" sub="target" />
-        </div>
-      </div>
-
-      {/* Investment sub-allocation table */}
+      {/* Investment breakdown */}
       <div className="rounded-2xl border border-border bg-card overflow-hidden">
-        <div className="bg-trust px-5 py-3">
-          <h3 className="text-sm font-semibold text-white">💼 Investment Sub-Allocation</h3>
+        <div className="bg-trust/5 border-b border-border px-5 py-3">
+          <h3 className="text-sm font-semibold flex items-center gap-2"><Wallet className="h-4 w-4 text-trust" /> Investment Breakdown</h3>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border bg-muted/50">
-                <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Asset Class</th>
-                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">%</th>
-                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Monthly (₹)</th>
-                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Annual (₹)</th>
-                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Return %</th>
-                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">{settings.projection_years}-Yr Corpus</th>
+              <tr className="border-b border-border bg-muted/30">
+                {['Asset Class', '%', 'Monthly', 'Return', `${settings.projection_years}Y Corpus`].map((h, i) => (
+                  <th key={h} className={cn('px-4 py-2.5 text-xs font-medium text-muted-foreground', i === 0 ? 'text-left' : 'text-right')}>{h}</th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {dash.investRows.map((r) => (
-                <tr key={r.label} className="border-b border-border/50 last:border-0">
-                  <td className="px-4 py-2.5">{r.emoji} {r.label}</td>
-                  <td className="px-4 py-2.5 text-right font-numeric">{r.pct}%</td>
+              {dash.investRows.map(r => (
+                <tr key={r.label} className="border-b border-border/40 last:border-0 hover:bg-muted/20 transition-colors">
+                  <td className="px-4 py-2.5 font-medium">{r.emoji} {r.label}</td>
+                  <td className="px-4 py-2.5 text-right font-numeric text-muted-foreground">{r.pct}%</td>
                   <td className="px-4 py-2.5 text-right font-numeric">{formatCurrency(r.monthly, 'INR')}</td>
-                  <td className="px-4 py-2.5 text-right font-numeric">{formatCurrency(r.annual, 'INR')}</td>
-                  <td className="px-4 py-2.5 text-right font-numeric text-muted-foreground">{r.rate}</td>
-                  <td className="px-4 py-2.5 text-right font-numeric font-semibold text-growth">{formatCurrency(r.corpus, 'INR')}</td>
+                  <td className="px-4 py-2.5 text-right font-numeric text-muted-foreground">{r.rate}%</td>
+                  <td className="px-4 py-2.5 text-right font-numeric font-bold text-growth">{formatCurrency(r.corpus, 'INR')}</td>
                 </tr>
               ))}
               <tr className="bg-trust/5 font-bold border-t-2 border-trust/20">
-                <td className="px-4 py-2.5">TOTAL</td>
-                <td className="px-4 py-2.5 text-right font-numeric">100%</td>
+                <td className="px-4 py-2.5" colSpan={2}>Total</td>
                 <td className="px-4 py-2.5 text-right font-numeric">{formatCurrency(dash.monthlyInvest, 'INR')}</td>
-                <td className="px-4 py-2.5 text-right font-numeric">{formatCurrency(dash.monthlyInvest * 12, 'INR')}</td>
-                <td className="px-4 py-2.5 text-right"></td>
+                <td className="px-4 py-2.5" />
                 <td className="px-4 py-2.5 text-right font-numeric text-growth">{formatCurrency(dash.totalCorpus, 'INR')}</td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
+
+      {/* Protection overview */}
+      <div className="rounded-2xl border border-border bg-card p-5 space-y-3">
+        <h3 className="font-semibold text-sm flex items-center gap-2"><Shield className="h-4 w-4 text-trust" /> Protection Coverage</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            { label: 'Life Insurance', value: formatCurrency(settings.life_insurance_pm, 'INR'), sub: '/month', ok: settings.life_insurance_pm >= 1000 },
+            { label: 'Health Insurance', value: formatCurrency(settings.health_insurance_pm, 'INR'), sub: '/month', ok: settings.health_insurance_pm >= 1500 },
+            { label: 'Annual Health Cost', value: formatCurrency(settings.health_insurance_pm * 12, 'INR'), sub: '/year', ok: true },
+            { label: 'Emergency Target', value: formatCurrency(dash.emergencyFundTarget, 'INR'), sub: '12 months', ok: true },
+          ].map(m => (
+            <div key={m.label} className={cn('rounded-xl border p-3', m.ok ? 'border-growth/30 bg-growth/5' : 'border-destructive/30 bg-destructive/5')}>
+              <p className="text-xs text-muted-foreground">{m.label}</p>
+              <p className={cn('text-sm font-bold font-numeric mt-0.5', m.ok ? 'text-growth' : 'text-destructive')}>{m.value}</p>
+              <p className="text-xs text-muted-foreground">{m.sub}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Tips */}
+      <PersonalizedTips settings={settings} dash={dash} />
     </div>
   )
 }
 
-// ── Tab 3: Monthly Budget ─────────────────────────────────────────────────────
+// ── Monthly Tab ───────────────────────────────────────────────────────────────
 function MonthlyTab({ settings }) {
   const [year, setYear] = useState(CURRENT_YEAR)
   const { data: expenses = [] } = usePlannerExpenses(year)
-
-  if (!settings) return (
-    <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-5 text-sm text-amber-800 dark:text-amber-300">
-      <Info className="inline h-4 w-4 mr-1.5 align-text-bottom" />
-      Complete the <strong>Setup</strong> tab first.
-    </div>
-  )
-
-  const dash = buildDashboard(settings)
-
-  // aggregate actual expenses per month
+  const dash = useMemo(() => settings ? buildDashboard(settings) : null, [settings])
   const actualByMonth = useMemo(() => {
     const map = {}
-    expenses.forEach(e => {
-      map[e.month] = (map[e.month] || 0) + Number(e.amount)
-    })
+    expenses.forEach(e => { map[e.month] = (map[e.month] || 0) + Number(e.amount) })
     return map
   }, [expenses])
 
+  if (!settings) return (
+    <div className="rounded-2xl border border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 p-8 text-center space-y-2">
+      <Info className="h-5 w-5 mx-auto text-amber-500" />
+      <p className="text-sm text-muted-foreground">Complete the <strong>Setup</strong> tab first.</p>
+    </div>
+  )
+
   const budgetExpenses = Math.round((settings.monthly_salary * settings.expenses_pct) / 100)
+  const currentMonth = new Date().getMonth() + 1
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold">Monthly Overview</h3>
+          <p className="text-xs text-muted-foreground">Budget plan vs your logged actuals</p>
+        </div>
         <Select value={String(year)} onValueChange={v => setYear(Number(v))}>
-          <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            {YEARS.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}
-          </SelectContent>
+          <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+          <SelectContent>{YEARS.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
         </Select>
-        <p className="text-xs text-muted-foreground">Budget is auto-calculated from your Setup. Actuals come from the Expense Tracker tab.</p>
       </div>
 
-      <div className="rounded-2xl border border-border bg-card overflow-hidden">
-        <div className="bg-trust px-5 py-3">
-          <h3 className="text-sm font-semibold text-white">📅 Monthly Budget Tracker — Year {year}</h3>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs whitespace-nowrap">
-            <thead>
-              <tr className="border-b border-border bg-muted/50">
-                <th className="sticky left-0 bg-muted/50 text-left px-4 py-2.5 font-medium text-muted-foreground min-w-[140px]">Category</th>
-                {MONTHS.map(m => <th key={m} className="text-right px-3 py-2.5 font-medium text-muted-foreground">{m}</th>)}
-                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Annual</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr className="border-b border-border/50 font-semibold bg-trust/5">
-                <td className="sticky left-0 bg-trust/5 px-4 py-2">Monthly Salary</td>
-                {MONTHS.map((_, i) => <td key={i} className="px-3 py-2 text-right font-numeric">{formatCurrency(settings.monthly_salary, 'INR')}</td>)}
-                <td className="px-4 py-2 text-right font-numeric">{formatCurrency(settings.monthly_salary * 12, 'INR')}</td>
-              </tr>
-              {dash.budgetRows.map(r => (
-                <tr key={r.label} className="border-b border-border/50">
-                  <td className="sticky left-0 bg-card px-4 py-2">{r.emoji} {r.label}</td>
-                  {MONTHS.map((_, i) => <td key={i} className="px-3 py-2 text-right font-numeric text-muted-foreground">{formatCurrency(r.monthly, 'INR')}</td>)}
-                  <td className="px-4 py-2 text-right font-numeric">{formatCurrency(r.annual, 'INR')}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      {/* Month summary cards */}
+      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
+        {MONTHS.map((m, i) => {
+          const actual = actualByMonth[i + 1] || 0
+          const variance = actual - budgetExpenses
+          const hasData = actual > 0
+          const isCurrent = year === CURRENT_YEAR && i + 1 === currentMonth
+          return (
+            <div key={m} className={cn(
+              'rounded-xl border p-2.5 text-center space-y-1.5 transition-all',
+              isCurrent ? 'border-trust bg-trust/5 shadow-sm' : 'border-border bg-card',
+              hasData && variance > 0 ? 'border-destructive/40' : hasData && variance < 0 ? 'border-growth/40' : '',
+            )}>
+              <p className={cn('text-xs font-bold', isCurrent ? 'text-trust' : 'text-muted-foreground')}>{m}</p>
+              {hasData ? (
+                <>
+                  <p className="text-xs font-bold font-numeric text-foreground leading-tight">{formatCurrency(actual, 'INR')}</p>
+                  <p className={cn('text-[10px] font-semibold', variance > 0 ? 'text-destructive' : 'text-growth')}>
+                    {variance > 0 ? '▲' : '▼'} {formatCurrency(Math.abs(variance), 'INR')}
+                  </p>
+                </>
+              ) : (
+                <p className="text-[10px] text-muted-foreground">No data</p>
+              )}
+            </div>
+          )
+        })}
       </div>
 
-      {/* Budget vs Actual summary */}
+      {/* Full budget table */}
       <div className="rounded-2xl border border-border bg-card overflow-hidden">
-        <div className="bg-muted/50 px-5 py-3 border-b border-border">
-          <h3 className="text-sm font-semibold">📝 Budget vs Actual (Expenses)</h3>
+        <div className="bg-trust/5 border-b border-border px-5 py-3">
+          <h3 className="text-sm font-semibold">Full Budget Plan — {year}</h3>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs whitespace-nowrap">
             <thead>
               <tr className="border-b border-border bg-muted/30">
-                <th className="sticky left-0 bg-muted/30 text-left px-4 py-2 font-medium text-muted-foreground min-w-[140px]">Row</th>
-                {MONTHS.map(m => <th key={m} className="text-right px-3 py-2 font-medium text-muted-foreground">{m}</th>)}
+                <th className="sticky left-0 bg-muted/30 text-left px-4 py-2.5 font-medium text-muted-foreground min-w-[140px]">Category</th>
+                {MONTHS.map(m => <th key={m} className="text-right px-3 py-2.5 font-medium text-muted-foreground">{m}</th>)}
+                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Annual</th>
               </tr>
             </thead>
             <tbody>
-              <tr className="border-b border-border/50">
-                <td className="sticky left-0 bg-card px-4 py-2 font-medium">Budget</td>
-                {MONTHS.map((_, i) => <td key={i} className="px-3 py-2 text-right font-numeric">{formatCurrency(budgetExpenses, 'INR')}</td>)}
+              <tr className="border-b border-border font-semibold bg-trust/5">
+                <td className="sticky left-0 bg-trust/5 px-4 py-2">💰 Salary</td>
+                {MONTHS.map((_, i) => <td key={i} className="px-3 py-2 text-right font-numeric">{formatCurrency(settings.monthly_salary, 'INR')}</td>)}
+                <td className="px-4 py-2 text-right font-numeric">{formatCurrency(settings.monthly_salary * 12, 'INR')}</td>
               </tr>
-              <tr className="border-b border-border/50">
-                <td className="sticky left-0 bg-card px-4 py-2 font-medium">Actual</td>
+              {dash.budgetRows.map(r => (
+                <tr key={r.label} className="border-b border-border/40">
+                  <td className="sticky left-0 bg-card px-4 py-2">{r.emoji} {r.label}</td>
+                  {MONTHS.map((_, i) => <td key={i} className="px-3 py-2 text-right font-numeric text-muted-foreground">{formatCurrency(r.monthly, 'INR')}</td>)}
+                  <td className="px-4 py-2 text-right font-numeric">{formatCurrency(r.annual, 'INR')}</td>
+                </tr>
+              ))}
+              <tr className="border-b border-border/40">
+                <td className="sticky left-0 bg-card px-4 py-2 font-semibold">📊 Actual Expenses</td>
                 {MONTHS.map((_, i) => {
                   const actual = actualByMonth[i + 1] || 0
-                  return <td key={i} className={cn('px-3 py-2 text-right font-numeric', actual > 0 ? 'text-foreground' : 'text-muted-foreground')}>{actual > 0 ? formatCurrency(actual, 'INR') : '—'}</td>
-                })}
-              </tr>
-              <tr>
-                <td className="sticky left-0 bg-card px-4 py-2 font-semibold">Over / (Under)</td>
-                {MONTHS.map((_, i) => {
-                  const actual = actualByMonth[i + 1] || 0
-                  const variance = actual - budgetExpenses
+                  const v = actual - budgetExpenses
                   return (
-                    <td key={i} className={cn('px-3 py-2 text-right font-numeric font-semibold', actual === 0 ? 'text-muted-foreground' : variance > 0 ? 'text-destructive' : 'text-growth')}>
-                      {actual === 0 ? '—' : variance > 0 ? `+${formatCurrency(variance, 'INR')}` : formatCurrency(variance, 'INR')}
+                    <td key={i} className={cn('px-3 py-2 text-right font-numeric font-medium', actual === 0 ? 'text-muted-foreground' : v > 0 ? 'text-destructive' : 'text-growth')}>
+                      {actual === 0 ? '—' : formatCurrency(actual, 'INR')}
                     </td>
                   )
                 })}
+                <td className="px-4 py-2 text-right font-numeric font-semibold">
+                  {formatCurrency(Object.values(actualByMonth).reduce((a, b) => a + b, 0), 'INR')}
+                </td>
               </tr>
             </tbody>
           </table>
@@ -435,16 +701,14 @@ function MonthlyTab({ settings }) {
   )
 }
 
-// ── Tab 4: Expense Tracker ────────────────────────────────────────────────────
+// ── Expense Tab ───────────────────────────────────────────────────────────────
 function ExpenseTab({ settings }) {
   const [year, setYear] = useState(CURRENT_YEAR)
   const [month, setMonth] = useState(new Date().getMonth() + 1)
   const { data: expenses = [], isLoading } = usePlannerExpenses(year)
   const { mutateAsync: saveExpense, isPending: saving } = useSaveExpense()
-
   const [amounts, setAmounts] = useState({})
 
-  // populate inputs from saved data when month/year changes
   useEffect(() => {
     const monthData = {}
     expenses.filter(e => e.month === month).forEach(e => { monthData[e.category] = e.amount })
@@ -454,105 +718,120 @@ function ExpenseTab({ settings }) {
   async function handleSave() {
     try {
       await Promise.all(
-        EXPENSE_CATS.map(cat =>
-          saveExpense({ year, month, category: cat, amount: Number(amounts[cat] || 0) })
-        )
+        EXPENSE_CATS.map(c => saveExpense({ year, month, category: c.name, amount: Number(amounts[c.name] || 0) }))
       )
-      toast.success(`${MONTHS[month - 1]} ${year} expenses saved.`)
+      toast.success(`${MONTHS[month - 1]} ${year} expenses saved!`)
     } catch {
       toast.error('Could not save expenses. Please try again.')
     }
   }
 
-  const totalActual = EXPENSE_CATS.reduce((s, c) => s + Number(amounts[c] || 0), 0)
+  const totalActual = EXPENSE_CATS.reduce((s, c) => s + Number(amounts[c.name] || 0), 0)
   const budgetExpenses = settings ? Math.round((settings.monthly_salary * settings.expenses_pct) / 100) : 0
   const variance = totalActual - budgetExpenses
+  const usedPct = budgetExpenses > 0 ? Math.min(100, Math.round((totalActual / budgetExpenses) * 100)) : 0
 
   return (
     <div className="space-y-5">
-      {/* Selectors */}
-      <div className="flex flex-wrap items-center gap-3">
-        <Select value={String(month)} onValueChange={v => setMonth(Number(v))}>
-          <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            {MONTHS.map((m, i) => <SelectItem key={m} value={String(i + 1)}>{m}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <Select value={String(year)} onValueChange={v => setYear(Number(v))}>
-          <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            {YEARS.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <span className="text-sm text-muted-foreground">Logging actual spending for {MONTHS[month - 1]} {year}</span>
-      </div>
-
-      {/* Expense grid */}
-      <div className="rounded-2xl border border-border bg-card overflow-hidden">
-        <div className="bg-trust px-5 py-3">
-          <h3 className="text-sm font-semibold text-white">📝 Monthly Actuals — {MONTHS[month - 1]} {year}</h3>
+      {/* Header */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="font-semibold">Expense Tracker</h3>
+          <p className="text-xs text-muted-foreground">Log actual spending to compare against your budget</p>
         </div>
-        {isLoading
-          ? <div className="p-5 grid sm:grid-cols-2 gap-4">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-12 rounded-lg" />)}</div>
-          : (
-            <div className="p-5 grid sm:grid-cols-2 md:grid-cols-3 gap-4">
-              {EXPENSE_CATS.map(cat => (
-                <div key={cat} className="space-y-1">
-                  <Label className="text-xs font-medium">{cat}</Label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">₹</span>
-                    <Input
-                      type="number" min={0}
-                      className="pl-6 text-sm"
-                      placeholder="0"
-                      value={amounts[cat] || ''}
-                      onChange={e => setAmounts(prev => ({ ...prev, [cat]: e.target.value }))}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )
-        }
+        <div className="flex items-center gap-2">
+          <Select value={String(month)} onValueChange={v => setMonth(Number(v))}>
+            <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+            <SelectContent>{MONTHS.map((m, i) => <SelectItem key={m} value={String(i + 1)}>{m}</SelectItem>)}</SelectContent>
+          </Select>
+          <Select value={String(year)} onValueChange={v => setYear(Number(v))}>
+            <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+            <SelectContent>{YEARS.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
       </div>
 
-      {/* Budget vs Actual summary */}
+      {/* Budget meter */}
       {settings && (
-        <div className="rounded-xl border border-border bg-card p-5">
-          <h3 className="font-semibold text-sm mb-4">Budget vs Actual (Expenses — {MONTHS[month - 1]})</h3>
+        <div className="rounded-2xl border border-border bg-card p-5 space-y-4">
+          <div className="flex justify-between items-center">
+            <p className="text-sm font-semibold">
+              Budget meter — <span className="text-muted-foreground font-normal">{MONTHS[month - 1]} {year}</span>
+            </p>
+            <span className={cn('text-sm font-bold', usedPct > 100 ? 'text-destructive' : usedPct > 80 ? 'text-amber-500' : 'text-growth')}>{usedPct}% used</span>
+          </div>
+          <div className="h-3 rounded-full bg-muted overflow-hidden">
+            <div
+              className={cn('h-full rounded-full transition-all duration-700', usedPct > 100 ? 'bg-destructive' : usedPct > 80 ? 'bg-amber-400' : 'bg-growth')}
+              style={{ width: `${Math.min(100, usedPct)}%` }}
+            />
+          </div>
           <div className="grid grid-cols-3 gap-4 text-center">
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Budget</p>
-              <p className="text-xl font-bold font-numeric text-trust">{formatCurrency(budgetExpenses, 'INR')}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Actual</p>
-              <p className={cn('text-xl font-bold font-numeric', totalActual > budgetExpenses ? 'text-destructive' : 'text-growth')}>
-                {formatCurrency(totalActual, 'INR')}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Over / (Under)</p>
-              <p className={cn('text-xl font-bold font-numeric', variance > 0 ? 'text-destructive' : variance < 0 ? 'text-growth' : 'text-muted-foreground')}>
-                {variance === 0 ? '—' : variance > 0 ? `+${formatCurrency(variance, 'INR')}` : formatCurrency(variance, 'INR')}
-              </p>
-            </div>
+            {[
+              { label: 'Budget', value: formatCurrency(budgetExpenses, 'INR'), color: 'text-trust' },
+              { label: 'Actual', value: formatCurrency(totalActual, 'INR'), color: totalActual > budgetExpenses ? 'text-destructive' : 'text-growth' },
+              { label: variance > 0 ? 'Over budget' : 'Remaining', value: formatCurrency(Math.abs(variance), 'INR'), color: variance > 0 ? 'text-destructive' : 'text-growth' },
+            ].map(m => (
+              <div key={m.label}>
+                <p className="text-xs text-muted-foreground mb-0.5">{m.label}</p>
+                <p className={cn('text-base font-bold font-numeric', m.color)}>{m.value}</p>
+              </div>
+            ))}
           </div>
           {variance > 0 && (
-            <div className="mt-4 rounded-lg bg-destructive/10 border border-destructive/20 px-4 py-2 text-xs text-destructive font-medium">
-              ⚠️ You are {formatCurrency(variance, 'INR')} over budget this month. Consider reducing discretionary spending.
+            <div className="rounded-lg bg-destructive/10 border border-destructive/20 px-4 py-2.5 text-xs text-destructive font-medium flex items-center gap-2">
+              <span>⚠️</span> Over budget by {formatCurrency(variance, 'INR')} — consider reducing discretionary spending.
             </div>
           )}
           {variance < 0 && totalActual > 0 && (
-            <div className="mt-4 rounded-lg bg-growth/10 border border-growth/20 px-4 py-2 text-xs text-growth font-medium">
-              ✓ You are {formatCurrency(Math.abs(variance), 'INR')} under budget. Great discipline!
+            <div className="rounded-lg bg-growth/10 border border-growth/20 px-4 py-2.5 text-xs text-growth font-medium flex items-center gap-2">
+              <span>✓</span> Under budget by {formatCurrency(Math.abs(variance), 'INR')} — consider investing the surplus!
             </div>
           )}
         </div>
       )}
 
-      <Button onClick={handleSave} disabled={saving} className="bg-trust hover:bg-trust/90 text-white gap-2">
-        <Save className="h-4 w-4" /> {saving ? 'Saving…' : `Save ${MONTHS[month - 1]} expenses`}
+      {/* Category cards */}
+      {isLoading
+        ? <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">{Array.from({ length: 12 }).map((_, i) => <Skeleton key={i} className="h-24 rounded-xl" />)}</div>
+        : (
+          <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
+            {EXPENSE_CATS.map(cat => {
+              const val = Number(amounts[cat.name] || 0)
+              const hasValue = val > 0
+              return (
+                <div key={cat.name} className={cn(
+                  'rounded-xl border p-4 transition-all space-y-3',
+                  hasValue ? 'border-trust/40 bg-trust/5 shadow-sm' : 'border-border bg-card hover:border-trust/20',
+                )}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xl">{cat.icon}</span>
+                      <Label className="text-xs font-semibold cursor-default leading-tight">{cat.name}</Label>
+                    </div>
+                    {hasValue && (
+                      <span className="text-[10px] font-bold text-trust bg-trust/10 px-1.5 py-0.5 rounded-full">saved</span>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-semibold">₹</span>
+                    <Input
+                      type="number" min={0}
+                      className="pl-7 h-9 text-sm"
+                      placeholder="0"
+                      value={amounts[cat.name] || ''}
+                      onChange={e => setAmounts(prev => ({ ...prev, [cat.name]: e.target.value }))}
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )
+      }
+
+      <Button onClick={handleSave} disabled={saving} size="lg" className="bg-trust hover:bg-trust/90 text-white gap-2 w-full sm:w-auto">
+        <Save className="h-4 w-4" /> {saving ? 'Saving…' : `Save ${MONTHS[month - 1]} ${year} Expenses`}
       </Button>
     </div>
   )
@@ -566,7 +845,7 @@ export default function PlannerPage() {
   async function handleSave(data) {
     try {
       await saveSettings(data)
-      toast.success('Settings saved!')
+      toast.success('Plan saved! Your dashboard has been updated.')
     } catch {
       toast.error('Could not save. Please try again.')
     }
@@ -579,21 +858,37 @@ export default function PlannerPage() {
         <meta name="description" content="Personal finance planner — budget allocation, investment projection and expense tracker." />
       </Helmet>
 
-      <div className="max-w-5xl mx-auto space-y-5">
-        <div>
-          <h1 className="text-xl font-bold flex items-center gap-2"><Calculator className="h-5 w-5 text-trust" /> Personal Finance Planner</h1>
-          <p className="text-sm text-muted-foreground mt-1">Set your budget allocations, track monthly expenses, and see your 15-year wealth projection.</p>
+      <div className="max-w-5xl mx-auto space-y-6">
+        {/* Page header */}
+        <div className="rounded-2xl border border-trust/20 bg-gradient-to-r from-trust/8 via-trust/4 to-transparent p-5">
+          <div className="flex items-center gap-4">
+            <div className="w-11 h-11 rounded-xl bg-trust flex items-center justify-center flex-shrink-0 shadow-sm">
+              <Calculator className="h-5 w-5 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold">Personal Finance Planner</h1>
+              <p className="text-sm text-muted-foreground mt-0.5">Plan your budget · Track expenses · Project your wealth</p>
+            </div>
+          </div>
         </div>
 
         {isLoading
-          ? <div className="space-y-3">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-12 rounded-xl" />)}</div>
+          ? <div className="space-y-3">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-xl" />)}</div>
           : (
             <Tabs defaultValue={settings ? 'dashboard' : 'setup'}>
-              <TabsList className="grid grid-cols-4 w-full max-w-lg">
-                <TabsTrigger value="setup" className="text-xs gap-1"><Calculator className="h-3.5 w-3.5" /> Setup</TabsTrigger>
-                <TabsTrigger value="dashboard" className="text-xs gap-1"><TrendingUp className="h-3.5 w-3.5" /> Dashboard</TabsTrigger>
-                <TabsTrigger value="monthly" className="text-xs gap-1"><Calendar className="h-3.5 w-3.5" /> Monthly</TabsTrigger>
-                <TabsTrigger value="expenses" className="text-xs gap-1"><Receipt className="h-3.5 w-3.5" /> Expenses</TabsTrigger>
+              <TabsList className="grid grid-cols-4 w-full h-11">
+                <TabsTrigger value="setup" className="gap-1.5 text-xs sm:text-sm font-medium">
+                  <Calculator className="h-3.5 w-3.5" /> Setup
+                </TabsTrigger>
+                <TabsTrigger value="dashboard" className="gap-1.5 text-xs sm:text-sm font-medium">
+                  <TrendingUp className="h-3.5 w-3.5" /> Dashboard
+                </TabsTrigger>
+                <TabsTrigger value="monthly" className="gap-1.5 text-xs sm:text-sm font-medium">
+                  <Calendar className="h-3.5 w-3.5" /> Monthly
+                </TabsTrigger>
+                <TabsTrigger value="expenses" className="gap-1.5 text-xs sm:text-sm font-medium">
+                  <Receipt className="h-3.5 w-3.5" /> Expenses
+                </TabsTrigger>
               </TabsList>
 
               <TabsContent value="setup" className="mt-6">
