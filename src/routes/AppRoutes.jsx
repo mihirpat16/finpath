@@ -42,6 +42,7 @@ const PortfolioTrackerPage = lazy(() => import('@/pages/trackers/PortfolioTracke
 const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'))
 const AdminPage = lazy(() => import('@/pages/admin/AdminPage'))
 const PlannerPage = lazy(() => import('@/pages/planner/PlannerPage'))
+const SimulatorPage = lazy(() => import('@/pages/goals/SimulatorPage'))
 
 function PageSpinner() {
   return (
@@ -94,6 +95,7 @@ export default function AppRoutes() {
         <Route path="dashboard" element={<Suspense fallback={<PageSpinner />}><DashboardPage /></Suspense>} />
         <Route path="goals" element={<Suspense fallback={<PageSpinner />}><GoalsListPage /></Suspense>} />
         <Route path="goals/new" element={<Suspense fallback={<PageSpinner />}><NewGoalPage /></Suspense>} />
+        <Route path="goals/simulator" element={<Suspense fallback={<PageSpinner />}><SimulatorPage /></Suspense>} />
         <Route path="goals/:id" element={<Suspense fallback={<PageSpinner />}><GoalDetailPage /></Suspense>} />
         <Route path="risk" element={<Suspense fallback={<PageSpinner />}><RiskQuizPage /></Suspense>} />
         <Route path="risk/quiz" element={<Suspense fallback={<PageSpinner />}><RiskQuizInnerPage /></Suspense>} />

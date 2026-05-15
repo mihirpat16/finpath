@@ -3,7 +3,7 @@ import { Outlet, NavLink, Link, useNavigate, useLocation } from 'react-router-do
 import { useTheme } from 'next-themes'
 import {
   LayoutDashboard, Target, ShieldCheck, PieChart, BarChart2,
-  Settings, TrendingUp, Menu, X, Sun, Moon, Bell, ChevronDown, LogOut, User, Calculator,
+  Settings, TrendingUp, Menu, X, Sun, Moon, Bell, ChevronDown, LogOut, User, Calculator, Zap,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -19,6 +19,7 @@ import { useTrackEvent } from '@/hooks/useTrackEvent'
 const NAV_ITEMS = [
   { to: '/app/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/app/goals', label: 'Goals', icon: Target },
+  { to: '/app/goals/simulator', label: 'Simulator', icon: Zap },
   { to: '/app/risk', label: 'Risk Profile', icon: ShieldCheck },
   { to: '/app/portfolio', label: 'Portfolio', icon: PieChart },
   { to: '/app/planner', label: 'Planner', icon: Calculator },

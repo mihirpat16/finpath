@@ -1,7 +1,8 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { Plus, Pencil, Trash2, ArrowLeft, PieChart, RefreshCw, AlertTriangle, Search, X, Clock } from 'lucide-react'
+import Papa from 'papaparse'
+import { Plus, Pencil, Trash2, ArrowLeft, PieChart, RefreshCw, AlertTriangle, Search, X, Clock, Upload, Eye, Key } from 'lucide-react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -73,8 +74,21 @@ async function fetchMFNav(schemeCode) {
 
 async function fetchStockPrice(symbol) {
   const ticker = symbol.includes('.') ? symbol : `${symbol}.NS`
+
+  // 1️⃣ Finnhub (if user has set an API key in localStorage)
+  const finnhubKey = localStorage.getItem('finnhub_api_key')
+  if (finnhubKey) {
+    try {
+      const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=NSE:${symbol.replace('.NS','').replace('.BO','')}&token=${finnhubKey}`, { signal: AbortSignal.timeout(6000) })
+      if (res.ok) {
+        const json = await res.json()
+        if (json.c && json.c > 0) return json.c // current price
+      }
+    } catch { /* fall through */ }
+  }
+
+  // 2️⃣ Yahoo Finance direct
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d`
-  // Try direct first (works sometimes)
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) })
     if (res.ok) {
@@ -83,7 +97,8 @@ async function fetchStockPrice(symbol) {
       if (price) return price
     }
   } catch { /* fall through to proxy */ }
-  // CORS proxy fallback
+
+  // 3️⃣ CORS proxy fallback
   const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
   const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(10000) })
   if (!res.ok) throw new Error('Price fetch failed')
@@ -99,6 +114,256 @@ async function fetchLivePrice(holding) {
   if (type === 'mutual_fund') return fetchMFNav(value)
   if (type === 'stock') return fetchStockPrice(value)
   return null
+}
+
+// ── CSV Import ────────────────────────────────────────────────────────────────
+const BROKER_FORMATS = {
+  zerodha: {
+    name: 'Zerodha',
+    detect: (headers) => headers.some(h => h.toLowerCase().includes('avg. cost') || h.toLowerCase().includes('avg cost')),
+    map: (row) => ({
+      instrument_name: row['Instrument'] || row['instrument'],
+      units: parseFloat(row['Qty.'] || row['Qty'] || row['qty'] || 0),
+      avg_buy_price: parseFloat((row['Avg. cost'] || row['Avg cost'] || '0').replace(/,/g, '')),
+      current_price: parseFloat((row['LTP'] || row['ltp'] || '0').replace(/,/g, '')),
+      total_invested: parseFloat((row['Cur. val'] || row['cur val'] || '0').replace(/,/g, '')),
+      asset_class: 'equity',
+      ticker: '',
+    }),
+  },
+  groww: {
+    name: 'Groww',
+    detect: (headers) => headers.some(h => h.toLowerCase() === 'isin') && headers.some(h => h.toLowerCase() === 'quantity'),
+    map: (row) => ({
+      instrument_name: row['Name'] || row['name'],
+      units: parseFloat(row['Quantity'] || row['quantity'] || 0),
+      avg_buy_price: parseFloat((row['Average Price'] || row['average price'] || '0').replace(/,/g, '')),
+      current_price: parseFloat((row['Current Price'] || row['current price'] || '0').replace(/,/g, '')),
+      total_invested: parseFloat((row['Current Value'] || row['current value'] || '0').replace(/,/g, '')),
+      asset_class: 'equity',
+      ticker: row['ISIN'] || '',
+    }),
+  },
+}
+
+function detectBroker(headers) {
+  for (const [key, fmt] of Object.entries(BROKER_FORMATS)) {
+    if (fmt.detect(headers)) return key
+  }
+  return null
+}
+
+function CsvImportDialog({ open, onOpenChange }) {
+  const [rows, setRows] = useState([])
+  const [broker, setBroker] = useState(null)
+  const [importing, setImporting] = useState(false)
+  const [assetClass, setAssetClass] = useState('equity')
+  const fileRef = useRef()
+  const add = useAddHolding()
+
+  function handleFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: ({ data, meta }) => {
+        const detected = detectBroker(meta.fields ?? [])
+        setBroker(detected)
+        if (detected) {
+          const fmt = BROKER_FORMATS[detected]
+          const mapped = data.map(fmt.map).filter(r => r.instrument_name && r.units > 0 && r.avg_buy_price > 0)
+          setRows(mapped)
+        } else {
+          // Generic: show raw with column picker
+          const mapped = data.map(r => ({
+            instrument_name: r[meta.fields[0]] ?? '',
+            units: parseFloat(r[meta.fields[1]] || 0),
+            avg_buy_price: parseFloat((r[meta.fields[2]] || '0').replace(/,/g, '')),
+            current_price: parseFloat((r[meta.fields[2]] || '0').replace(/,/g, '')),
+            total_invested: 0,
+            asset_class: 'equity',
+            ticker: '',
+          })).filter(r => r.instrument_name && r.units > 0)
+          setRows(mapped)
+        }
+      },
+    })
+  }
+
+  async function handleImport() {
+    if (!rows.length) return
+    setImporting(true)
+    let ok = 0, fail = 0
+    for (const row of rows) {
+      try {
+        await add.mutateAsync({
+          ...row,
+          asset_class: assetClass,
+          total_invested: row.total_invested || Math.round(row.units * row.avg_buy_price),
+          last_price_update: new Date().toISOString(),
+        })
+        ok++
+      } catch { fail++ }
+    }
+    setImporting(false)
+    if (fail === 0) toast.success(`Imported ${ok} holdings successfully!`)
+    else toast.error(`Imported ${ok}, failed ${fail}. Check your CSV format.`)
+    onOpenChange(false)
+    setRows([])
+    setBroker(null)
+  }
+
+  function reset() { setRows([]); setBroker(null); if (fileRef.current) fileRef.current.value = '' }
+
+  return (
+    <Dialog open={open} onOpenChange={v => { onOpenChange(v); if (!v) reset() }}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Upload className="h-4 w-4" /> Import from CSV</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-4 pt-1">
+          {rows.length === 0 ? (
+            <>
+              {/* Upload area */}
+              <label className="flex flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-border hover:border-trust/50 bg-muted/20 hover:bg-trust/5 p-8 cursor-pointer transition-all">
+                <Upload className="h-8 w-8 text-muted-foreground" />
+                <div className="text-center">
+                  <p className="text-sm font-semibold">Click to upload your broker CSV</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Supports Zerodha, Groww, and generic CSV files</p>
+                </div>
+                <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleFile} />
+              </label>
+
+              {/* Broker instructions */}
+              <div className="grid sm:grid-cols-2 gap-3 text-xs">
+                {[
+                  { broker: 'Zerodha', steps: 'Kite → Portfolio → Holdings → Download (⬇)' },
+                  { broker: 'Groww', steps: 'Portfolio → Stocks → Export → Download CSV' },
+                ].map(b => (
+                  <div key={b.broker} className="rounded-xl border border-border bg-card p-3">
+                    <p className="font-semibold mb-1">{b.broker}</p>
+                    <p className="text-muted-foreground">{b.steps}</p>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Broker detected badge + asset class override */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {broker
+                    ? <Badge className="bg-growth text-white">{BROKER_FORMATS[broker].name} format detected</Badge>
+                    : <Badge variant="outline">Generic CSV — review before importing</Badge>}
+                  <span className="text-xs text-muted-foreground">{rows.length} holdings found</span>
+                </div>
+                <button onClick={reset} className="text-xs text-muted-foreground hover:text-foreground underline">
+                  Upload different file
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <Label className="text-xs whitespace-nowrap">Default asset class:</Label>
+                <Select value={assetClass} onValueChange={setAssetClass}>
+                  <SelectTrigger className="w-36 h-8 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {ASSET_CLASSES.map(c => <SelectItem key={c} value={c}>{CLASS_LABELS[c]}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Preview table */}
+              <div className="rounded-xl border border-border overflow-hidden">
+                <div className="bg-muted/30 px-4 py-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                  <Eye className="h-3.5 w-3.5" /> Preview (first 8 rows)
+                </div>
+                <div className="overflow-x-auto max-h-52">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/20">
+                        <th className="text-left px-3 py-2 font-medium">Instrument</th>
+                        <th className="text-right px-3 py-2 font-medium">Units</th>
+                        <th className="text-right px-3 py-2 font-medium">Avg Buy</th>
+                        <th className="text-right px-3 py-2 font-medium">Total Invested</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.slice(0, 8).map((r, i) => (
+                        <tr key={i} className="border-b border-border/40 last:border-0">
+                          <td className="px-3 py-2 font-medium truncate max-w-[180px]">{r.instrument_name}</td>
+                          <td className="px-3 py-2 text-right font-numeric">{r.units}</td>
+                          <td className="px-3 py-2 text-right font-numeric">{formatCurrency(r.avg_buy_price, 'INR')}</td>
+                          <td className="px-3 py-2 text-right font-numeric">{formatCurrency(r.total_invested || r.units * r.avg_buy_price, 'INR')}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {rows.length > 8 && <div className="px-4 py-2 text-xs text-muted-foreground bg-muted/10">…and {rows.length - 8} more holdings</div>}
+              </div>
+            </>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          {rows.length > 0 && (
+            <Button onClick={handleImport} disabled={importing} className="bg-trust hover:bg-trust/90 text-white gap-2">
+              <Upload className="h-4 w-4" />
+              {importing ? 'Importing…' : `Import ${rows.length} Holdings`}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ── Finnhub API Key Dialog ────────────────────────────────────────────────────
+function FinnhubKeyDialog({ open, onOpenChange }) {
+  const [key, setKey] = useState(() => localStorage.getItem('finnhub_api_key') ?? '')
+
+  function save() {
+    if (key.trim()) {
+      localStorage.setItem('finnhub_api_key', key.trim())
+      toast.success('Finnhub API key saved! Stock prices will now use real-time data.')
+    } else {
+      localStorage.removeItem('finnhub_api_key')
+      toast.success('Finnhub API key removed.')
+    }
+    onOpenChange(false)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Key className="h-4 w-4" /> Finnhub API Key</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 pt-1">
+          <div className="rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/20 p-4 text-xs text-blue-700 dark:text-blue-400 space-y-1.5">
+            <p className="font-semibold">Free tier — 60 requests/minute</p>
+            <p>Get a free key at <span className="font-semibold underline">finnhub.io</span> → Sign up → API Keys tab. No credit card needed.</p>
+            <p>Used to fetch live NSE stock prices. Falls back to Yahoo Finance if not set.</p>
+          </div>
+          <div className="space-y-1.5">
+            <Label>API Key</Label>
+            <Input
+              placeholder="Enter your Finnhub API key"
+              value={key}
+              onChange={e => setKey(e.target.value)}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={save} className="bg-trust hover:bg-trust/90 text-white">Save Key</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 // ── Holding Dialog ────────────────────────────────────────────────────────────
@@ -358,7 +623,9 @@ export default function PortfolioTrackerPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editHolding, setEditHolding] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
-  const [refreshStatus, setRefreshStatus] = useState({}) // {id: 'ok'|'error'|'pending'}
+  const [refreshStatus, setRefreshStatus] = useState({})
+  const [csvOpen, setCsvOpen] = useState(false)
+  const [finnhubOpen, setFinnhubOpen] = useState(false)
 
   const { data: holdings = [], isLoading } = useHoldings()
   const { data: riskProfile } = useRiskProfile()
@@ -442,11 +709,18 @@ export default function PortfolioTrackerPage() {
             <p className="text-sm text-muted-foreground mt-0.5">Live NAV & market prices · Allocation drift</p>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" className="gap-2" onClick={() => setFinnhubOpen(true)}>
+            <Key className="h-3.5 w-3.5" />
+            {localStorage.getItem('finnhub_api_key') ? 'Finnhub ✓' : 'Add API Key'}
+          </Button>
+          <Button size="sm" variant="outline" className="gap-2" onClick={() => setCsvOpen(true)}>
+            <Upload className="h-3.5 w-3.5" /> Import CSV
+          </Button>
           {canRefresh && (
             <Button size="sm" variant="outline" className="gap-2" onClick={handleRefresh} disabled={refreshing}>
               <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-              {refreshing ? 'Fetching prices…' : 'Refresh prices'}
+              {refreshing ? 'Fetching…' : 'Refresh prices'}
             </Button>
           )}
           <Button size="sm" className="bg-trust hover:bg-trust/90 text-white gap-2" onClick={openAdd}>
@@ -618,6 +892,8 @@ export default function PortfolioTrackerPage() {
       )}
 
       <HoldingDialog open={dialogOpen} onOpenChange={setDialogOpen} editHolding={editHolding} />
+      <CsvImportDialog open={csvOpen} onOpenChange={setCsvOpen} />
+      <FinnhubKeyDialog open={finnhubOpen} onOpenChange={setFinnhubOpen} />
     </div>
   )
 }
