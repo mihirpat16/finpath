@@ -3,7 +3,8 @@ import { Helmet } from 'react-helmet-async'
 import { motion } from 'framer-motion'
 import {
   Target, ShieldCheck, BarChart2, TrendingUp, ArrowRight,
-  CheckCircle2, Star, ChevronRight,
+  CheckCircle2, Star, ChevronRight, UserPlus, ClipboardList,
+  Brain, Flag, Calculator, Activity, Clock,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -153,48 +154,163 @@ function Features() {
 
 // ─── How it works ─────────────────────────────────────────────────────────────
 const STEPS = [
-  { step: '01', title: 'Sign up', desc: 'Create your free account in under 30 seconds. No credit card required.' },
-  { step: '02', title: 'Set goals', desc: 'Tell us what you\'re saving for and when. We\'ll calculate the numbers.' },
-  { step: '03', title: 'Get your plan', desc: 'Take the risk quiz and see a personalised asset allocation strategy.' },
-  { step: '04', title: 'Track progress', desc: 'Log investments, track net worth, and watch your goals inch closer.' },
+  {
+    step: '01',
+    icon: UserPlus,
+    title: 'Create your free account',
+    time: '1 min',
+    color: 'bg-blue-500',
+    lightColor: 'bg-blue-50 dark:bg-blue-950/30',
+    borderColor: 'border-blue-200 dark:border-blue-800',
+    desc: 'Sign up with just your name, email, and password — no credit card, no KYC, completely free.',
+    points: [
+      'Click "Get Started" or "Create free account"',
+      'Enter your full name, email address and a password',
+      'You are instantly logged in — no email verification wait',
+    ],
+  },
+  {
+    step: '02',
+    icon: ClipboardList,
+    title: 'Complete your profile (onboarding)',
+    time: '2 min',
+    color: 'bg-violet-500',
+    lightColor: 'bg-violet-50 dark:bg-violet-950/30',
+    borderColor: 'border-violet-200 dark:border-violet-800',
+    desc: 'Answer a few quick questions so FinPath can personalise your experience from day one.',
+    points: [
+      'Enter your age, city, and annual income range',
+      'Choose your primary financial goal (retirement, home, education…)',
+      'Tell us your investment experience level',
+    ],
+  },
+  {
+    step: '03',
+    icon: Brain,
+    title: 'Take the risk quiz',
+    time: '3 min',
+    color: 'bg-amber-500',
+    lightColor: 'bg-amber-50 dark:bg-amber-950/30',
+    borderColor: 'border-amber-200 dark:border-amber-800',
+    desc: 'Answer 8 simple questions about your financial comfort and get your investor profile instantly.',
+    points: [
+      'Questions cover your income stability, investment horizon and loss tolerance',
+      'Get your profile: Conservative, Moderate, or Aggressive',
+      'Unlock personalised mutual fund and ETF recommendations tailored to your risk level',
+    ],
+  },
+  {
+    step: '04',
+    icon: Flag,
+    title: 'Set your financial goals',
+    time: '5 min',
+    color: 'bg-rose-500',
+    lightColor: 'bg-rose-50 dark:bg-rose-950/30',
+    borderColor: 'border-rose-200 dark:border-rose-800',
+    desc: 'Add real goals — retirement, child\'s education, buying a home, emergency fund — and see exactly what to invest monthly.',
+    points: [
+      'Pick a goal type and enter your target amount and timeline',
+      'FinPath auto-calculates the required monthly SIP using compound interest',
+      'Track progress on your dashboard — green bar fills as you get closer',
+    ],
+  },
+  {
+    step: '05',
+    icon: Calculator,
+    title: 'Build your personal finance plan',
+    time: '10 min',
+    color: 'bg-emerald-500',
+    lightColor: 'bg-emerald-50 dark:bg-emerald-950/30',
+    borderColor: 'border-emerald-200 dark:border-emerald-800',
+    desc: 'Open the Finance Planner and get a complete 15-year wealth projection based on your salary and budget.',
+    points: [
+      'Enter your monthly salary and drag sliders to split: expenses, EMI, vacation, donations, investments',
+      'Sub-allocate investments across Equity MF, PPF/EPF, NPS, direct stocks',
+      'Instantly see your Financial Health Score, projected corpus, and personalized tips',
+    ],
+  },
+  {
+    step: '06',
+    icon: Activity,
+    title: 'Monitor and update regularly',
+    time: 'Daily / Monthly',
+    color: 'bg-trust',
+    lightColor: 'bg-trust/5',
+    borderColor: 'border-trust/20',
+    desc: 'Keep your financial picture accurate by logging real data — the more you update, the more useful FinPath becomes.',
+    points: [
+      'Expense Tracker: Log actual monthly spending (groceries, fuel, dining, etc.) to compare against your budget',
+      'Net Worth Tracker: Add your assets (FD, gold, property) and liabilities (loans) — watch your net worth grow',
+      'Portfolio Tracker: Record SIP and lump-sum investments to see real returns vs target',
+      'Dashboard: Get an instant overview of all goals, net worth, and investment health in one place',
+    ],
+  },
 ]
 
 function HowItWorks() {
   return (
-    <section id="how-it-works" className="py-24">
-      <div className="container max-w-4xl mx-auto px-4">
-        <div className="text-center mb-14">
+    <section id="how-it-works" className="py-24 bg-muted/20">
+      <div className="container max-w-5xl mx-auto px-4">
+        <div className="text-center mb-16">
           <Badge variant="outline" className="mb-4">How it works</Badge>
-          <h2 className="text-3xl md:text-4xl font-bold tracking-tight">
-            From zero to a financial plan in minutes
+          <h2 className="text-3xl md:text-4xl font-bold tracking-tight mb-3">
+            From sign-up to full financial clarity
           </h2>
+          <p className="text-muted-foreground max-w-xl mx-auto text-sm leading-relaxed">
+            Follow these 6 steps to go from a blank slate to a complete, personalised financial plan — and keep it updated for daily monitoring.
+          </p>
         </div>
 
-        <div className="relative">
-          {/* Connector line */}
-          <div className="absolute left-6 top-8 bottom-8 w-px bg-border hidden md:block" />
+        <div className="space-y-6">
+          {STEPS.map(({ step, icon: Icon, title, time, color, lightColor, borderColor, desc, points }, i) => (
+            <motion.div
+              key={step}
+              variants={fadeUp}
+              initial="hidden"
+              whileInView="show"
+              viewport={{ once: true }}
+              custom={i * 0.15}
+              className={`rounded-2xl border ${borderColor} ${lightColor} p-6`}
+            >
+              <div className="flex flex-col sm:flex-row gap-5">
+                {/* Step number + icon */}
+                <div className="flex sm:flex-col items-center sm:items-center gap-3 sm:gap-2 flex-shrink-0">
+                  <div className={`flex h-12 w-12 items-center justify-center rounded-xl ${color} text-white shadow-sm`}>
+                    <Icon className="h-5 w-5" />
+                  </div>
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Clock className="h-3 w-3" />
+                    <span>{time}</span>
+                  </div>
+                </div>
 
-          <div className="space-y-8">
-            {STEPS.map(({ step, title, desc }, i) => (
-              <motion.div
-                key={step}
-                variants={fadeUp}
-                initial="hidden"
-                whileInView="show"
-                viewport={{ once: true }}
-                custom={i * 0.5}
-                className="flex gap-6 items-start"
-              >
-                <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full border-2 border-trust bg-background text-trust font-bold text-sm z-10">
-                  {step}
+                {/* Content */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs font-bold text-muted-foreground tracking-widest">STEP {step}</span>
+                  </div>
+                  <h3 className="font-bold text-lg leading-snug mb-1.5">{title}</h3>
+                  <p className="text-sm text-muted-foreground mb-3 leading-relaxed">{desc}</p>
+                  <ul className="space-y-1.5">
+                    {points.map((pt, j) => (
+                      <li key={j} className="flex items-start gap-2 text-sm">
+                        <CheckCircle2 className="h-4 w-4 text-growth flex-shrink-0 mt-0.5" />
+                        <span>{pt}</span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-                <div className="pt-2">
-                  <h3 className="font-semibold text-lg mb-1">{title}</h3>
-                  <p className="text-sm text-muted-foreground">{desc}</p>
-                </div>
-              </motion.div>
-            ))}
-          </div>
+              </div>
+            </motion.div>
+          ))}
+        </div>
+
+        {/* CTA */}
+        <div className="mt-14 text-center">
+          <p className="text-sm text-muted-foreground mb-4">Ready to get started? It takes less than 5 minutes to set up your complete plan.</p>
+          <Button size="lg" className="bg-trust hover:bg-trust/90 text-white gap-2" asChild>
+            <Link to="/auth/register">Create free account <ArrowRight className="h-4 w-4" /></Link>
+          </Button>
         </div>
       </div>
     </section>
