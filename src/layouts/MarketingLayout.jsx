@@ -149,8 +149,6 @@ function Footer() {
             <ul className="space-y-2.5 text-sm text-white/60">
               <li><Link to="/about" className="hover:text-growth transition-colors">About FinPath</Link></li>
               <li><Link to="/contact" className="hover:text-growth transition-colors">Contact & Support</Link></li>
-              <li><Link to="/about#founder" className="hover:text-growth transition-colors">Founder</Link></li>
-              <li><Link to="/about#special-thanks" className="hover:text-growth transition-colors">Special Thanks</Link></li>
               <li><Link to="/about#info" className="hover:text-growth transition-colors">Info & Disclaimers</Link></li>
             </ul>
           </div>
