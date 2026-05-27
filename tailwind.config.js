@@ -13,19 +13,19 @@ export default {
     },
     extend: {
       colors: {
-        // FinPath design tokens
+        // FinPath design tokens — emerald theme
         trust: {
-          DEFAULT: '#0F2A4A',
-          50: '#E8EEF5',
-          100: '#C5D4E6',
-          200: '#9FB8D4',
-          300: '#789CC2',
-          400: '#5180B0',
-          500: '#3A6499',
-          600: '#2A4D7F',
-          700: '#1D3A65',
-          800: '#12284C',
-          900: '#0F2A4A',
+          DEFAULT: '#064E3B',
+          50: '#ECFDF5',
+          100: '#D1FAE5',
+          200: '#A7F3D0',
+          300: '#6EE7B7',
+          400: '#34D399',
+          500: '#10B981',
+          600: '#059669',
+          700: '#047857',
+          800: '#065F46',
+          900: '#064E3B',
         },
         growth: {
           DEFAULT: '#10B981',
@@ -81,7 +81,8 @@ export default {
         sm: 'calc(var(--radius) - 4px)',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
+        sans: ['Public Sans', 'Inter', 'system-ui', 'sans-serif'],
+        headline: ['Public Sans', 'system-ui', 'sans-serif'],
         mono: ['Geist Mono', 'ui-monospace', 'monospace'],
       },
       boxShadow: {
@@ -97,10 +98,25 @@ export default {
           from: { height: 'var(--radix-accordion-content-height)' },
           to: { height: '0' },
         },
+        float: {
+          '0%, 100%': { transform: 'translateY(0px)' },
+          '50%': { transform: 'translateY(-10px)' },
+        },
+        orbit: {
+          from: { transform: 'rotate(0deg)' },
+          to: { transform: 'rotate(360deg)' },
+        },
+        'counter-rotate': {
+          from: { transform: 'rotate(0deg)' },
+          to: { transform: 'rotate(-360deg)' },
+        },
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
+        float: 'float 6s ease-in-out infinite',
+        orbit: 'orbit 40s linear infinite',
+        'counter-rotate': 'counter-rotate 40s linear infinite',
       },
     },
   },

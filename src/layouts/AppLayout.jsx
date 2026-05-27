@@ -58,7 +58,7 @@ function NavList({ onItemClick, collapsed }) {
               cn(
                 'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors',
                 isActive
-                  ? 'bg-trust/10 text-trust font-medium dark:bg-trust/20 dark:text-blue-400'
+                  ? 'bg-trust/10 text-trust font-medium dark:bg-trust/20 dark:text-emerald-400'
                   : 'text-muted-foreground hover:bg-muted hover:text-foreground',
                 collapsed && 'md:justify-center md:px-2',
               )
@@ -134,7 +134,7 @@ function MobileBottomNav() {
           className={({ isActive }) =>
             cn(
               'flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[10px] transition-colors',
-              isActive ? 'text-trust dark:text-blue-400' : 'text-muted-foreground',
+              isActive ? 'text-trust dark:text-emerald-400' : 'text-muted-foreground',
             )
           }
         >

@@ -13,7 +13,7 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
 
-    --primary: 213 64% 17%;
+    --primary: 160 85% 16%;
     --primary-foreground: 210 40% 98%;
 
     --secondary: 210 40% 96%;
@@ -30,7 +30,7 @@
 
     --border: 214 32% 91%;
     --input: 214 32% 91%;
-    --ring: 213 64% 17%;
+    --ring: 160 85% 16%;
 
     --radius: 0.75rem;
   }
@@ -82,6 +82,25 @@
 
   .font-numeric {
     @apply font-mono tabular-nums;
+  }
+
+  /* Glass morphism utility */
+  .glass-card {
+    background: rgba(255, 255, 255, 0.45);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+  }
+
+  .dark .glass-card {
+    background: rgba(6, 78, 59, 0.15);
+    border: 1px solid rgba(16, 185, 129, 0.15);
+  }
+
+  .emerald-gradient-bg {
+    background:
+      radial-gradient(circle at 75% 15%, rgba(16, 185, 129, 0.12), transparent 55%),
+      radial-gradient(circle at 15% 85%, rgba(6, 78, 59, 0.07), transparent 55%);
   }
 
   /* Visible focus rings for keyboard navigation */
