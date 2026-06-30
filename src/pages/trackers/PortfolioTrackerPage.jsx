@@ -150,54 +150,90 @@ function parseXlsxFile(file) {
   })
 }
 
+const COL_NONE = '__none__'
+
 function CsvImportDialog({ open, onOpenChange }) {
+  // step: 'upload' → 'map' (unknown broker) or 'preview' (known broker) → done
+  const [step, setStep] = useState('upload')
+  const [rawData, setRawData] = useState([])
+  const [headers, setHeaders] = useState([])
   const [rows, setRows] = useState([])
   const [broker, setBroker] = useState(null)
   const [importing, setImporting] = useState(false)
   const [assetClass, setAssetClass] = useState('equity')
+  const [colMap, setColMap] = useState({ name: COL_NONE, units: COL_NONE, avgPrice: COL_NONE, currentPrice: COL_NONE, invested: COL_NONE })
   const fileRef = useRef()
   const add = useAddHolding()
 
-  function processRows(data, fields) {
+  function afterParse(data, fields) {
+    if (!data.length) { toast.error('The file appears to be empty.'); return }
     const detected = detectBroker(fields)
-    setBroker(detected)
     if (detected) {
-      const fmt = BROKER_FORMATS[detected]
-      const mapped = data.map(fmt.map).filter(r => r.instrument_name && r.units > 0 && r.avg_buy_price > 0)
+      const mapped = data.map(BROKER_FORMATS[detected].map).filter(r => r.instrument_name && r.units > 0 && r.avg_buy_price > 0)
+      if (!mapped.length) {
+        // Detected format but no valid rows — fall through to manual mapping
+        setBroker(null)
+        setRawData(data)
+        setHeaders(fields)
+        setStep('map')
+        toast.error(`Detected ${BROKER_FORMATS[detected].name} format but found 0 valid rows. Please map columns manually.`)
+        return
+      }
+      setBroker(detected)
       setRows(mapped)
+      setStep('preview')
     } else {
-      const mapped = data.map(r => ({
-        instrument_name: r[fields[0]] ?? '',
-        units: parseFloat(String(r[fields[1]] || 0).replace(/,/g, '')),
-        avg_buy_price: parseFloat(String(r[fields[2]] || '0').replace(/,/g, '')),
-        current_price: parseFloat(String(r[fields[2]] || '0').replace(/,/g, '')),
-        total_invested: 0,
-        asset_class: 'equity',
-        ticker: '',
-      })).filter(r => r.instrument_name && r.units > 0)
-      setRows(mapped)
+      setBroker(null)
+      setRawData(data)
+      setHeaders(fields)
+      setStep('map')
     }
   }
 
   async function handleFile(e) {
     const file = e.target.files?.[0]
     if (!file) return
-    const isExcel = /\.(xlsx|xls)$/i.test(file.name)
-    if (isExcel) {
-      try {
+    try {
+      if (/\.(xlsx|xls)$/i.test(file.name)) {
         const { data, fields } = await parseXlsxFile(file)
-        processRows(data, fields)
-      } catch {
-        toast.error('Could not read the Excel file. Try saving it as CSV and importing again.')
-        if (fileRef.current) fileRef.current.value = ''
+        afterParse(data, fields)
+      } else {
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: true,
+          complete: ({ data, meta }) => afterParse(data, meta.fields ?? []),
+        })
       }
-    } else {
-      Papa.parse(file, {
-        header: true,
-        skipEmptyLines: true,
-        complete: ({ data, meta }) => processRows(data, meta.fields ?? []),
-      })
+    } catch {
+      toast.error('Could not read the file. Make sure it is a valid CSV or Excel file.')
+      if (fileRef.current) fileRef.current.value = ''
     }
+  }
+
+  function applyMapping() {
+    const { name, units, avgPrice, currentPrice, invested } = colMap
+    if (name === COL_NONE || units === COL_NONE || avgPrice === COL_NONE) {
+      toast.error('Please select at least: Instrument Name, Units, and Avg Buy Price.')
+      return
+    }
+    const mapped = rawData
+      .map(row => ({
+        instrument_name: String(row[name] ?? '').trim(),
+        units: n(row[units]),
+        avg_buy_price: n(row[avgPrice]),
+        current_price: currentPrice !== COL_NONE ? n(row[currentPrice]) : n(row[avgPrice]),
+        total_invested: invested !== COL_NONE ? n(row[invested]) : 0,
+        asset_class: 'equity',
+        ticker: '',
+      }))
+      .filter(r => r.instrument_name && r.units > 0 && r.avg_buy_price > 0)
+
+    if (!mapped.length) {
+      toast.error('No valid rows found. Make sure the selected columns contain numbers and names.')
+      return
+    }
+    setRows(mapped)
+    setStep('preview')
   }
 
   async function handleImport() {
@@ -217,35 +253,42 @@ function CsvImportDialog({ open, onOpenChange }) {
     }
     setImporting(false)
     if (fail === 0) toast.success(`Imported ${ok} holdings successfully!`)
-    else toast.error(`Imported ${ok}, failed ${fail}. Check your CSV format.`)
+    else toast.error(`Imported ${ok}, failed ${fail}.`)
     onOpenChange(false)
-    setRows([])
-    setBroker(null)
+    reset()
   }
 
-  function reset() { setRows([]); setBroker(null); if (fileRef.current) fileRef.current.value = '' }
+  function reset() {
+    setStep('upload')
+    setRows([])
+    setRawData([])
+    setHeaders([])
+    setBroker(null)
+    setColMap({ name: COL_NONE, units: COL_NONE, avgPrice: COL_NONE, currentPrice: COL_NONE, invested: COL_NONE })
+    if (fileRef.current) fileRef.current.value = ''
+  }
 
   return (
     <Dialog open={open} onOpenChange={v => { onOpenChange(v); if (!v) reset() }}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2"><Upload className="h-4 w-4" /> Import from CSV / Excel</DialogTitle>
+          <DialogTitle className="flex items-center gap-2"><Upload className="h-4 w-4" /> Import Holdings</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4 pt-1">
-          {rows.length === 0 ? (
+
+          {/* ── STEP 1: Upload ── */}
+          {step === 'upload' && (
             <>
-              {/* Upload area */}
               <label className="flex flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-border hover:border-trust/50 bg-muted/20 hover:bg-trust/5 p-8 cursor-pointer transition-all">
                 <Upload className="h-8 w-8 text-muted-foreground" />
                 <div className="text-center">
                   <p className="text-sm font-semibold">Click to upload your broker file</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Supports CSV and Excel (.xlsx) from Zerodha, Groww, Upstox, AngelOne and more</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">CSV or Excel (.xlsx) · Any broker · Unknown formats get a column picker</p>
                 </div>
                 <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleFile} />
               </label>
 
-              {/* Broker instructions */}
               <div className="grid sm:grid-cols-2 gap-3 text-xs">
                 {[
                   { broker: 'Zerodha', steps: 'Kite → Portfolio → Holdings → Download (⬇) → CSV' },
@@ -259,17 +302,85 @@ function CsvImportDialog({ open, onOpenChange }) {
                   </div>
                 ))}
               </div>
-              <p className="text-xs text-muted-foreground text-center">Other platforms: export as CSV or Excel and upload — FinPath will auto-detect the columns.</p>
+              <p className="text-xs text-muted-foreground text-center">
+                Other brokers: upload any CSV/Excel — you will be shown a column picker to map the fields.
+              </p>
             </>
-          ) : (
+          )}
+
+          {/* ── STEP 2: Manual column mapping (unknown broker) ── */}
+          {step === 'map' && (
             <>
-              {/* Broker detected badge + asset class override */}
+              <div className="rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 p-4 text-sm text-amber-700 dark:text-amber-400">
+                <p className="font-semibold mb-1">Broker format not recognised — map your columns</p>
+                <p className="text-xs">Found {headers.length} columns and {rawData.length} rows. Select which column maps to each field below.</p>
+              </div>
+
+              {/* Raw preview so user can see column names + sample values */}
+              {rawData.length > 0 && (
+                <div className="rounded-xl border border-border overflow-hidden">
+                  <div className="bg-muted/30 px-3 py-2 text-xs font-medium text-muted-foreground">Your file — first 3 rows</div>
+                  <div className="overflow-x-auto">
+                    <table className="text-xs w-full">
+                      <thead>
+                        <tr className="border-b border-border bg-muted/20">
+                          {headers.map(h => (
+                            <th key={h} className="px-3 py-2 text-left font-medium whitespace-nowrap">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rawData.slice(0, 3).map((row, i) => (
+                          <tr key={i} className="border-b border-border/40 last:border-0">
+                            {headers.map(h => (
+                              <td key={h} className="px-3 py-1.5 whitespace-nowrap max-w-[140px] truncate">{String(row[h] ?? '')}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Column mapping selects */}
+              <div className="grid sm:grid-cols-2 gap-3">
+                {[
+                  { key: 'name', label: 'Instrument / Fund Name', required: true },
+                  { key: 'units', label: 'Units / Quantity', required: true },
+                  { key: 'avgPrice', label: 'Avg Buy Price / NAV', required: true },
+                  { key: 'currentPrice', label: 'Current / LTP Price', required: false },
+                  { key: 'invested', label: 'Total Invested Value', required: false },
+                ].map(({ key, label, required }) => (
+                  <div key={key} className="space-y-1">
+                    <Label className="text-xs">{label}{required && <span className="text-destructive ml-0.5">*</span>}</Label>
+                    <Select
+                      value={colMap[key]}
+                      onValueChange={v => setColMap(prev => ({ ...prev, [key]: v }))}
+                    >
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue placeholder={required ? 'Select column…' : 'Optional — skip'} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={COL_NONE}>{required ? '— select —' : '— skip —'}</SelectItem>
+                        {headers.map(h => <SelectItem key={h} value={h}>{h}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* ── STEP 3: Preview before import ── */}
+          {step === 'preview' && (
+            <>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   {broker
-                    ? <Badge className="bg-growth text-white">{BROKER_FORMATS[broker].name} format detected</Badge>
-                    : <Badge variant="outline">Generic CSV — review before importing</Badge>}
-                  <span className="text-xs text-muted-foreground">{rows.length} holdings found</span>
+                    ? <Badge className="bg-growth text-white">{BROKER_FORMATS[broker].name} detected</Badge>
+                    : <Badge variant="outline">Custom mapping</Badge>}
+                  <span className="text-xs text-muted-foreground">{rows.length} holdings ready</span>
                 </div>
                 <button onClick={reset} className="text-xs text-muted-foreground hover:text-foreground underline">
                   Upload different file
@@ -277,7 +388,7 @@ function CsvImportDialog({ open, onOpenChange }) {
               </div>
 
               <div className="flex items-center gap-3">
-                <Label className="text-xs whitespace-nowrap">Default asset class:</Label>
+                <Label className="text-xs whitespace-nowrap">Asset class for all:</Label>
                 <Select value={assetClass} onValueChange={setAssetClass}>
                   <SelectTrigger className="w-36 h-8 text-xs"><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -286,7 +397,6 @@ function CsvImportDialog({ open, onOpenChange }) {
                 </Select>
               </div>
 
-              {/* Preview table */}
               <div className="rounded-xl border border-border overflow-hidden">
                 <div className="bg-muted/30 px-4 py-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
                   <Eye className="h-3.5 w-3.5" /> Preview (first 8 rows)
@@ -313,7 +423,9 @@ function CsvImportDialog({ open, onOpenChange }) {
                     </tbody>
                   </table>
                 </div>
-                {rows.length > 8 && <div className="px-4 py-2 text-xs text-muted-foreground bg-muted/10">…and {rows.length - 8} more holdings</div>}
+                {rows.length > 8 && (
+                  <div className="px-4 py-2 text-xs text-muted-foreground bg-muted/10">…and {rows.length - 8} more holdings</div>
+                )}
               </div>
             </>
           )}
@@ -321,7 +433,15 @@ function CsvImportDialog({ open, onOpenChange }) {
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          {rows.length > 0 && (
+          {step === 'map' && (
+            <Button
+              onClick={applyMapping}
+              className="bg-trust hover:bg-trust/90 text-white gap-2"
+            >
+              <Eye className="h-4 w-4" /> Preview Import
+            </Button>
+          )}
+          {step === 'preview' && (
             <Button onClick={handleImport} disabled={importing} className="bg-trust hover:bg-trust/90 text-white gap-2">
               <Upload className="h-4 w-4" />
               {importing ? 'Importing…' : `Import ${rows.length} Holdings`}
