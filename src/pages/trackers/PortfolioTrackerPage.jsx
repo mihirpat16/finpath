@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import Papa from 'papaparse'
+import * as XLSX from 'xlsx'
 import { Plus, Pencil, Trash2, ArrowLeft, PieChart, RefreshCw, AlertTriangle, Search, X, Clock, Upload, Eye, Key } from 'lucide-react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -100,6 +101,26 @@ function detectBroker(headers) {
   return null
 }
 
+// Parse an XLSX/XLS file and return { data, fields } in same shape as PapaParse
+function parseXlsxFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      try {
+        const workbook = XLSX.read(new Uint8Array(e.target.result), { type: 'array' })
+        const sheet = workbook.Sheets[workbook.SheetNames[0]]
+        const data = XLSX.utils.sheet_to_json(sheet, { defval: '' })
+        const fields = data.length > 0 ? Object.keys(data[0]) : []
+        resolve({ data, fields })
+      } catch (err) {
+        reject(err)
+      }
+    }
+    reader.onerror = reject
+    reader.readAsArrayBuffer(file)
+  })
+}
+
 function CsvImportDialog({ open, onOpenChange }) {
   const [rows, setRows] = useState([])
   const [broker, setBroker] = useState(null)
@@ -108,34 +129,46 @@ function CsvImportDialog({ open, onOpenChange }) {
   const fileRef = useRef()
   const add = useAddHolding()
 
-  function handleFile(e) {
+  function processRows(data, fields) {
+    const detected = detectBroker(fields)
+    setBroker(detected)
+    if (detected) {
+      const fmt = BROKER_FORMATS[detected]
+      const mapped = data.map(fmt.map).filter(r => r.instrument_name && r.units > 0 && r.avg_buy_price > 0)
+      setRows(mapped)
+    } else {
+      const mapped = data.map(r => ({
+        instrument_name: r[fields[0]] ?? '',
+        units: parseFloat(String(r[fields[1]] || 0).replace(/,/g, '')),
+        avg_buy_price: parseFloat(String(r[fields[2]] || '0').replace(/,/g, '')),
+        current_price: parseFloat(String(r[fields[2]] || '0').replace(/,/g, '')),
+        total_invested: 0,
+        asset_class: 'equity',
+        ticker: '',
+      })).filter(r => r.instrument_name && r.units > 0)
+      setRows(mapped)
+    }
+  }
+
+  async function handleFile(e) {
     const file = e.target.files?.[0]
     if (!file) return
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: ({ data, meta }) => {
-        const detected = detectBroker(meta.fields ?? [])
-        setBroker(detected)
-        if (detected) {
-          const fmt = BROKER_FORMATS[detected]
-          const mapped = data.map(fmt.map).filter(r => r.instrument_name && r.units > 0 && r.avg_buy_price > 0)
-          setRows(mapped)
-        } else {
-          // Generic: show raw with column picker
-          const mapped = data.map(r => ({
-            instrument_name: r[meta.fields[0]] ?? '',
-            units: parseFloat(r[meta.fields[1]] || 0),
-            avg_buy_price: parseFloat((r[meta.fields[2]] || '0').replace(/,/g, '')),
-            current_price: parseFloat((r[meta.fields[2]] || '0').replace(/,/g, '')),
-            total_invested: 0,
-            asset_class: 'equity',
-            ticker: '',
-          })).filter(r => r.instrument_name && r.units > 0)
-          setRows(mapped)
-        }
-      },
-    })
+    const isExcel = /\.(xlsx|xls)$/i.test(file.name)
+    if (isExcel) {
+      try {
+        const { data, fields } = await parseXlsxFile(file)
+        processRows(data, fields)
+      } catch {
+        toast.error('Could not read the Excel file. Try saving it as CSV and importing again.')
+        if (fileRef.current) fileRef.current.value = ''
+      }
+    } else {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: ({ data, meta }) => processRows(data, meta.fields ?? []),
+      })
+    }
   }
 
   async function handleImport() {
@@ -167,7 +200,7 @@ function CsvImportDialog({ open, onOpenChange }) {
     <Dialog open={open} onOpenChange={v => { onOpenChange(v); if (!v) reset() }}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2"><Upload className="h-4 w-4" /> Import from CSV</DialogTitle>
+          <DialogTitle className="flex items-center gap-2"><Upload className="h-4 w-4" /> Import from CSV / Excel</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4 pt-1">
@@ -177,17 +210,19 @@ function CsvImportDialog({ open, onOpenChange }) {
               <label className="flex flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-border hover:border-trust/50 bg-muted/20 hover:bg-trust/5 p-8 cursor-pointer transition-all">
                 <Upload className="h-8 w-8 text-muted-foreground" />
                 <div className="text-center">
-                  <p className="text-sm font-semibold">Click to upload your broker CSV</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Supports Zerodha, Groww, and generic CSV files</p>
+                  <p className="text-sm font-semibold">Click to upload your broker file</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Supports CSV and Excel (.xlsx) from Zerodha, Groww, Upstox, AngelOne and more</p>
                 </div>
-                <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleFile} />
+                <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleFile} />
               </label>
 
               {/* Broker instructions */}
               <div className="grid sm:grid-cols-2 gap-3 text-xs">
                 {[
-                  { broker: 'Zerodha', steps: 'Kite → Portfolio → Holdings → Download (⬇)' },
+                  { broker: 'Zerodha', steps: 'Kite → Portfolio → Holdings → Download (⬇) → CSV' },
                   { broker: 'Groww', steps: 'Portfolio → Stocks → Export → Download CSV' },
+                  { broker: 'Upstox', steps: 'Portfolio → Holdings → Download → Excel / CSV' },
+                  { broker: 'AngelOne', steps: 'Portfolio → Holdings → Export → Download Excel' },
                 ].map(b => (
                   <div key={b.broker} className="rounded-xl border border-border bg-card p-3">
                     <p className="font-semibold mb-1">{b.broker}</p>
@@ -195,6 +230,7 @@ function CsvImportDialog({ open, onOpenChange }) {
                   </div>
                 ))}
               </div>
+              <p className="text-xs text-muted-foreground text-center">Other platforms: export as CSV or Excel and upload — FinPath will auto-detect the columns.</p>
             </>
           ) : (
             <>
@@ -741,7 +777,7 @@ export default function PortfolioTrackerPage() {
             {hasFinnhubKey ? 'Finnhub ✓' : 'Add API Key'}
           </Button>
           <Button size="sm" variant="outline" className="gap-2" onClick={() => setCsvOpen(true)}>
-            <Upload className="h-3.5 w-3.5" /> Import CSV
+            <Upload className="h-3.5 w-3.5" /> Import CSV / Excel
           </Button>
           {canRefresh && (
             <Button size="sm" variant="outline" className="gap-2" onClick={handleRefresh} disabled={isRefetching}>
