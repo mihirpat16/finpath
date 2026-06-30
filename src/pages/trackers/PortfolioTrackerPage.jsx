@@ -64,32 +64,61 @@ async function searchMFunds(query) {
   return res.json() // [{schemeCode, schemeName}]
 }
 
-// ── CSV Import ────────────────────────────────────────────────────────────────
+// ── CSV / XLSX Import ─────────────────────────────────────────────────────────
+// Excel stores numbers as JS numbers — always convert to String before .replace()
+const n = (v) => parseFloat(String(v ?? '0').replace(/,/g, '')) || 0
+
 const BROKER_FORMATS = {
   zerodha: {
     name: 'Zerodha',
-    detect: (headers) => headers.some(h => h.toLowerCase().includes('avg. cost') || h.toLowerCase().includes('avg cost')),
+    detect: (h) => h.some(x => /avg\.?\s*cost/i.test(x)) && h.some(x => /instrument/i.test(x)),
     map: (row) => ({
-      instrument_name: row['Instrument'] || row['instrument'],
-      units: parseFloat(row['Qty.'] || row['Qty'] || row['qty'] || 0),
-      avg_buy_price: parseFloat((row['Avg. cost'] || row['Avg cost'] || '0').replace(/,/g, '')),
-      current_price: parseFloat((row['LTP'] || row['ltp'] || '0').replace(/,/g, '')),
-      total_invested: parseFloat((row['Cur. val'] || row['cur val'] || '0').replace(/,/g, '')),
+      instrument_name: row['Instrument'] || row['instrument'] || '',
+      units: n(row['Qty.'] ?? row['Qty'] ?? row['qty']),
+      avg_buy_price: n(row['Avg. cost'] ?? row['Avg cost'] ?? row['avg. cost']),
+      current_price: n(row['LTP'] ?? row['ltp']),
+      total_invested: n(row['Cur. val'] ?? row['cur val'] ?? row['Cur val']),
       asset_class: 'equity',
       ticker: '',
     }),
   },
+  angelone: {
+    name: 'AngelOne',
+    detect: (h) => h.some(x => /avg.?buy.?price/i.test(x)),
+    map: (row) => ({
+      instrument_name: row['Symbol'] || row['Scrip Name'] || row['symbol'] || '',
+      units: n(row['Qty'] ?? row['Quantity'] ?? row['Net Qty']),
+      avg_buy_price: n(row['Avg Buy Price'] ?? row['Average Price']),
+      current_price: n(row['LTP'] ?? row['Current Price']),
+      total_invested: n(row['Buy Value'] ?? row['Invested Value'] ?? row['Current Value']),
+      asset_class: 'equity',
+      ticker: '',
+    }),
+  },
+  upstox: {
+    name: 'Upstox',
+    detect: (h) => h.some(x => /buy.?average/i.test(x)) && h.some(x => /^symbol$/i.test(x)),
+    map: (row) => ({
+      instrument_name: row['Symbol'] || row['symbol'] || row['Scrip'] || '',
+      units: n(row['Quantity'] ?? row['Qty']),
+      avg_buy_price: n(row['Buy Average'] ?? row['Buy Avg'] ?? row['Average']),
+      current_price: n(row['LTP'] ?? row['Current Price']),
+      total_invested: n(row['Invested Value'] ?? row['Buy Value'] ?? row['Current Value']),
+      asset_class: 'equity',
+      ticker: String(row['ISIN'] || ''),
+    }),
+  },
   groww: {
     name: 'Groww',
-    detect: (headers) => headers.some(h => h.toLowerCase() === 'isin') && headers.some(h => h.toLowerCase() === 'quantity'),
+    detect: (h) => h.some(x => /^isin$/i.test(x)) && h.some(x => /^quantity$/i.test(x)) && h.some(x => /^name$/i.test(x)),
     map: (row) => ({
-      instrument_name: row['Name'] || row['name'],
-      units: parseFloat(row['Quantity'] || row['quantity'] || 0),
-      avg_buy_price: parseFloat((row['Average Price'] || row['average price'] || '0').replace(/,/g, '')),
-      current_price: parseFloat((row['Current Price'] || row['current price'] || '0').replace(/,/g, '')),
-      total_invested: parseFloat((row['Current Value'] || row['current value'] || '0').replace(/,/g, '')),
+      instrument_name: row['Name'] || row['name'] || '',
+      units: n(row['Quantity'] ?? row['quantity']),
+      avg_buy_price: n(row['Average Price'] ?? row['average price'] ?? row['Avg Price']),
+      current_price: n(row['Current Price'] ?? row['current price'] ?? row['LTP']),
+      total_invested: n(row['Current Value'] ?? row['current value'] ?? row['Invested Value']),
       asset_class: 'equity',
-      ticker: row['ISIN'] || '',
+      ticker: String(row['ISIN'] || ''),
     }),
   },
 }
