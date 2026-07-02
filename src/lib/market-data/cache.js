@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase/client'
-import { fetchQuote, fetchMultipleQuotes } from './finnhub'
+import { fetchNSEQuote } from './yahoo'
 
 const CACHE_TTL_MINUTES = 15
 
@@ -25,19 +25,15 @@ async function fetchMFNav(schemeCode) {
 }
 
 // Dispatch to correct source based on ticker format:
-// MF:{schemeCode}  → mfapi.in (AMFI NAV)
-// STK:{symbol}     → Finnhub (NSE:SYMBOL)
-// NSE:SYMBOL       → Finnhub directly
+// MF:{schemeCode}  → mfapi.in (AMFI NAV, free)
+// STK:{symbol}     → Yahoo Finance (NSE, free, no API key)
 async function fetchFresh(ticker) {
   if (ticker.startsWith('MF:')) {
-    const schemeCode = ticker.slice(3)
-    return fetchMFNav(schemeCode)
+    return fetchMFNav(ticker.slice(3))
   }
-  // For STK: prefix, convert to Finnhub NSE format
-  const finnhubTicker = ticker.startsWith('STK:')
-    ? `NSE:${ticker.slice(4)}`
-    : ticker
-  return fetchQuote(finnhubTicker).then(r => ({ ...r, ticker })) // keep original ticker key
+  const nseSymbol = ticker.startsWith('STK:') ? ticker.slice(4) : ticker
+  const quote = await fetchNSEQuote(nseSymbol)
+  return { ...quote, ticker }
 }
 
 /**
@@ -111,13 +107,17 @@ export async function getPrices(tickers) {
       })
     }
 
-    // Fetch stock prices via Finnhub
+    // Fetch NSE stock prices via Yahoo Finance (free, no API key)
     if (stockTickers.length > 0) {
-      const finnhubSymbols = stockTickers.map(t => t.startsWith('STK:') ? `NSE:${t.slice(4)}` : t)
-      const stockResults = await fetchMultipleQuotes(finnhubSymbols)
+      const stockResults = await Promise.allSettled(
+        stockTickers.map(t => {
+          const sym = t.startsWith('STK:') ? t.slice(4) : t
+          return fetchNSEQuote(sym).then(r => ({ ...r, ticker: t }))
+        })
+      )
       stockResults.forEach((r, i) => {
-        if (r.success) allFetched.push({ success: true, data: { ...r.data, ticker: stockTickers[i] } })
-        else allFetched.push({ success: false, ticker: stockTickers[i], error: r.error })
+        if (r.status === 'fulfilled') allFetched.push({ success: true, data: r.value })
+        else allFetched.push({ success: false, ticker: stockTickers[i], error: r.reason.message })
       })
     }
 

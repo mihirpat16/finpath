@@ -1102,7 +1102,7 @@ export default function PortfolioTrackerPage() {
             {/* Price source note */}
             <div className="mt-4 pt-3 border-t border-border/50 text-xs text-muted-foreground space-y-0.5">
               <p>📊 Mutual fund NAV: sourced from <span className="font-medium">AMFI via mfapi.in</span> · cached 15 min · updated daily after market close</p>
-              <p>📈 Stock prices: sourced from <span className="font-medium">Finnhub (NSE)</span> · cached 15 min · live during market hours (9:15 AM – 3:30 PM IST)</p>
+              <p>📈 Stock prices: sourced from <span className="font-medium">Yahoo Finance (NSE)</span> · cached 15 min · live during market hours (9:15 AM – 3:30 PM IST)</p>
             </div>
           </div>
         </div>
