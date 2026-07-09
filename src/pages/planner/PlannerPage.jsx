@@ -836,6 +836,7 @@ function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
 
 // ── Expense Tab ───────────────────────────────────────────────────────────────
 function ExpenseTab({ settings }) {
+  const { user } = useAuth()
   const [year, setYear] = useState(CURRENT_YEAR)
   const [month, setMonth] = useState(new Date().getMonth() + 1)
   const [openCat, setOpenCat] = useState(null)
@@ -919,7 +920,12 @@ function ExpenseTab({ settings }) {
           <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
             {EXPENSE_CATS.map(cat => {
               const catTotal = catTotals[cat.name] ?? 0
-              const count = monthItems.filter(i => i.category === cat.name).length
+              const count = (() => {
+                try {
+                  const key = `fp_exp_${user?.id}_${year}_${month}_${cat.name.replace(/\W/g, '_')}`
+                  return JSON.parse(localStorage.getItem(key) || '[]').length
+                } catch { return 0 }
+              })()
               const hasValue = catTotal > 0
               return (
                 <button
