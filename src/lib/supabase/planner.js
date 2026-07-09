@@ -39,3 +39,33 @@ export async function upsertExpense(expense) {
   if (error) throw error
   return data
 }
+
+// ── Detailed expense line items ───────────────────────────────────────────────
+export async function fetchExpenseItems(userId, year) {
+  const { data, error } = await supabase
+    .from('planner_expense_items')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('year', year)
+    .order('entry_date', { ascending: true })
+  if (error) throw error
+  return data ?? []
+}
+
+export async function addExpenseItem(item) {
+  const { data, error } = await supabase
+    .from('planner_expense_items')
+    .insert(item)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function deleteExpenseItem(id) {
+  const { error } = await supabase
+    .from('planner_expense_items')
+    .delete()
+    .eq('id', id)
+  if (error) throw error
+}

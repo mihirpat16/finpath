@@ -3,6 +3,7 @@ import { useAuth } from '@/context/AuthContext'
 import {
   fetchPlannerSettings, upsertPlannerSettings,
   fetchExpenses, upsertExpense,
+  fetchExpenseItems, addExpenseItem, deleteExpenseItem,
 } from '@/lib/supabase/planner'
 
 export function usePlannerSettings() {
@@ -38,5 +39,32 @@ export function useSaveExpense() {
   return useMutation({
     mutationFn: (expense) => upsertExpense({ ...expense, user_id: user.id }),
     onSuccess: (_, vars) => qc.invalidateQueries({ queryKey: ['planner-expenses', user?.id, vars.year] }),
+  })
+}
+
+export function useExpenseItems(year) {
+  const { user } = useAuth()
+  return useQuery({
+    queryKey: ['expense-items', user?.id, year],
+    queryFn: () => fetchExpenseItems(user.id, year),
+    enabled: !!user?.id && !!year,
+  })
+}
+
+export function useAddExpenseItem() {
+  const { user } = useAuth()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (item) => addExpenseItem({ ...item, user_id: user.id }),
+    onSuccess: (_, vars) => qc.invalidateQueries({ queryKey: ['expense-items', user?.id, vars.year] }),
+  })
+}
+
+export function useDeleteExpenseItem() {
+  const { user } = useAuth()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id }) => deleteExpenseItem(id),
+    onSuccess: (_, vars) => qc.invalidateQueries({ queryKey: ['expense-items', user?.id, vars.year] }),
   })
 }

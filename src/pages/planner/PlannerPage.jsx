@@ -4,7 +4,7 @@ import { toast } from 'sonner'
 import {
   Save, Calculator, TrendingUp, Calendar, Receipt, Info,
   Shield, Target, Zap, Award, PiggyBank, Wallet, IndianRupee,
-  Sparkles, BarChart3, ArrowUpRight,
+  Sparkles, BarChart3, ArrowUpRight, Plus, Trash2,
 } from 'lucide-react'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
@@ -15,7 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/format'
-import { usePlannerSettings, useSavePlannerSettings, usePlannerExpenses, useSaveExpense } from '@/hooks/usePlanner'
+import { usePlannerSettings, useSavePlannerSettings, usePlannerExpenses, useExpenseItems, useAddExpenseItem, useDeleteExpenseItem } from '@/hooks/usePlanner'
 import {
   buildDashboard, investmentPct, emergencyLiquidPct,
   IDEAL, fv, computeHealthScore,
@@ -591,13 +591,13 @@ function DashboardTab({ settings }) {
 // ── Monthly Tab ───────────────────────────────────────────────────────────────
 function MonthlyTab({ settings }) {
   const [year, setYear] = useState(CURRENT_YEAR)
-  const { data: expenses = [] } = usePlannerExpenses(year)
+  const { data: items = [] } = useExpenseItems(year)
   const dash = useMemo(() => settings ? buildDashboard(settings) : null, [settings])
   const actualByMonth = useMemo(() => {
     const map = {}
-    expenses.forEach(e => { map[e.month] = (map[e.month] || 0) + Number(e.amount) })
+    items.forEach(e => { map[e.month] = (map[e.month] || 0) + Number(e.amount) })
     return map
-  }, [expenses])
+  }, [items])
 
   if (!settings) return (
     <div className="rounded-2xl border border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 p-8 text-center space-y-2">
@@ -701,32 +701,145 @@ function MonthlyTab({ settings }) {
   )
 }
 
+// ── Category Detail Dialog ────────────────────────────────────────────────────
+function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
+  const today = new Date().toISOString().split('T')[0]
+  const [form, setForm] = useState({ entry_date: today, description: '', amount: '' })
+  const { data: allItems = [] } = useExpenseItems(year)
+  const { mutateAsync: addItem, isPending: adding } = useAddExpenseItem()
+  const { mutateAsync: deleteItem, isPending: deleting } = useDeleteExpenseItem()
+
+  const items = useMemo(
+    () => allItems.filter(i => i.month === month && i.category === category.name),
+    [allItems, month, category.name]
+  )
+  const total = items.reduce((s, i) => s + Number(i.amount), 0)
+
+  async function handleAdd() {
+    if (!form.description.trim()) { toast.error('Enter a description / particular'); return }
+    if (!form.amount || Number(form.amount) <= 0) { toast.error('Enter a valid amount'); return }
+    try {
+      await addItem({ year, month, category: category.name, entry_date: form.entry_date, description: form.description.trim(), amount: Number(form.amount) })
+      setForm(f => ({ ...f, description: '', amount: '' }))
+      toast.success('Entry added!')
+    } catch { toast.error('Could not add entry') }
+  }
+
+  async function handleDelete(item) {
+    try {
+      await deleteItem({ id: item.id, year })
+    } catch { toast.error('Could not delete entry') }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <span className="text-2xl">{category.icon}</span> {category.name}
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-4 pt-1">
+          {/* Total banner */}
+          <div className="rounded-xl border border-trust/20 bg-trust/5 px-4 py-3 flex items-center justify-between">
+            <div>
+              <p className="text-xs text-muted-foreground">{MONTHS[month - 1]} total</p>
+              <p className="text-2xl font-bold font-numeric text-trust">{formatCurrency(total, 'INR')}</p>
+            </div>
+            <span className="text-xs text-muted-foreground">{items.length} {items.length === 1 ? 'entry' : 'entries'}</span>
+          </div>
+
+          {/* Entries list */}
+          {items.length > 0 && (
+            <div className="rounded-xl border border-border overflow-hidden">
+              <div className="bg-muted/30 grid grid-cols-[76px_1fr_86px_30px] gap-2 px-3 py-2 text-[11px] font-medium text-muted-foreground">
+                <span>Date</span><span>Particular</span><span className="text-right">Amount</span><span />
+              </div>
+              <div className="max-h-52 overflow-y-auto divide-y divide-border/40">
+                {items.map(item => (
+                  <div key={item.id} className="grid grid-cols-[76px_1fr_86px_30px] gap-2 items-center px-3 py-2.5 text-sm">
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">
+                      {new Date(item.entry_date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                    </span>
+                    <span className="truncate">{item.description}</span>
+                    <span className="text-right font-numeric font-semibold">{formatCurrency(Number(item.amount), 'INR')}</span>
+                    <button onClick={() => handleDelete(item)} disabled={deleting} className="text-muted-foreground hover:text-destructive transition-colors flex justify-center">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="bg-muted/20 border-t border-border px-3 py-2.5 flex justify-between items-center">
+                <span className="text-xs font-semibold text-muted-foreground">Total</span>
+                <span className="text-sm font-bold font-numeric text-trust">{formatCurrency(total, 'INR')}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Add entry form */}
+          <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-3">
+            <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Add Entry</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Date</Label>
+                <Input
+                  type="date" value={form.entry_date} className="h-9 text-sm"
+                  onChange={e => setForm(f => ({ ...f, entry_date: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Amount (₹)</Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-semibold">₹</span>
+                  <Input
+                    type="number" min="0" step="0.01" placeholder="0"
+                    value={form.amount} className="pl-7 h-9 text-sm"
+                    onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
+                    onKeyDown={e => e.key === 'Enter' && handleAdd()}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Particular / Description</Label>
+              <Input
+                placeholder="e.g. Groceries from D-Mart, Electricity bill…"
+                value={form.description} className="h-9 text-sm"
+                onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                onKeyDown={e => e.key === 'Enter' && handleAdd()}
+              />
+            </div>
+            <Button onClick={handleAdd} disabled={adding} size="sm" className="w-full bg-trust hover:bg-trust/90 text-white gap-2 h-9">
+              <Plus className="h-3.5 w-3.5" /> {adding ? 'Adding…' : 'Add Entry'}
+            </Button>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // ── Expense Tab ───────────────────────────────────────────────────────────────
 function ExpenseTab({ settings }) {
   const [year, setYear] = useState(CURRENT_YEAR)
   const [month, setMonth] = useState(new Date().getMonth() + 1)
-  const { data: expenses = [], isLoading } = usePlannerExpenses(year)
-  const { mutateAsync: saveExpense, isPending: saving } = useSaveExpense()
-  const [amounts, setAmounts] = useState({})
+  const [openCat, setOpenCat] = useState(null)
+  const { data: allItems = [], isLoading } = useExpenseItems(year)
 
-  useEffect(() => {
-    const monthData = {}
-    expenses.filter(e => e.month === month).forEach(e => { monthData[e.category] = e.amount })
-    setAmounts(monthData)
-  }, [expenses, month])
+  const monthItems = useMemo(() => allItems.filter(i => i.month === month), [allItems, month])
 
-  async function handleSave() {
-    try {
-      await Promise.all(
-        EXPENSE_CATS.map(c => saveExpense({ year, month, category: c.name, amount: Number(amounts[c.name] || 0) }))
-      )
-      toast.success(`${MONTHS[month - 1]} ${year} expenses saved!`)
-    } catch {
-      toast.error('Could not save expenses. Please try again.')
-    }
-  }
+  const catTotals = useMemo(() => {
+    const map = {}
+    monthItems.forEach(i => { map[i.category] = (map[i.category] ?? 0) + Number(i.amount) })
+    return map
+  }, [monthItems])
 
-  const totalActual = EXPENSE_CATS.reduce((s, c) => s + Number(amounts[c.name] || 0), 0)
+  const totalActual = Object.values(catTotals).reduce((s, v) => s + v, 0)
   const budgetExpenses = settings ? Math.round((settings.monthly_salary * settings.expenses_pct) / 100) : 0
   const variance = totalActual - budgetExpenses
   const usedPct = budgetExpenses > 0 ? Math.min(100, Math.round((totalActual / budgetExpenses) * 100)) : 0
@@ -737,7 +850,7 @@ function ExpenseTab({ settings }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="font-semibold">Expense Tracker</h3>
-          <p className="text-xs text-muted-foreground">Log actual spending to compare against your budget</p>
+          <p className="text-xs text-muted-foreground">Click any category to add entries with date &amp; description</p>
         </div>
         <div className="flex items-center gap-2">
           <Select value={String(month)} onValueChange={v => setMonth(Number(v))}>
@@ -771,68 +884,74 @@ function ExpenseTab({ settings }) {
               { label: 'Budget', value: formatCurrency(budgetExpenses, 'INR'), color: 'text-trust' },
               { label: 'Actual', value: formatCurrency(totalActual, 'INR'), color: totalActual > budgetExpenses ? 'text-destructive' : 'text-growth' },
               { label: variance > 0 ? 'Over budget' : 'Remaining', value: formatCurrency(Math.abs(variance), 'INR'), color: variance > 0 ? 'text-destructive' : 'text-growth' },
-            ].map(m => (
-              <div key={m.label}>
-                <p className="text-xs text-muted-foreground mb-0.5">{m.label}</p>
-                <p className={cn('text-base font-bold font-numeric', m.color)}>{m.value}</p>
+            ].map(stat => (
+              <div key={stat.label}>
+                <p className="text-xs text-muted-foreground mb-0.5">{stat.label}</p>
+                <p className={cn('text-base font-bold font-numeric', stat.color)}>{stat.value}</p>
               </div>
             ))}
           </div>
           {variance > 0 && (
             <div className="rounded-lg bg-destructive/10 border border-destructive/20 px-4 py-2.5 text-xs text-destructive font-medium flex items-center gap-2">
-              <span>⚠️</span> Over budget by {formatCurrency(variance, 'INR')} — consider reducing discretionary spending.
+              ⚠️ Over budget by {formatCurrency(variance, 'INR')} — consider reducing discretionary spending.
             </div>
           )}
           {variance < 0 && totalActual > 0 && (
             <div className="rounded-lg bg-growth/10 border border-growth/20 px-4 py-2.5 text-xs text-growth font-medium flex items-center gap-2">
-              <span>✓</span> Under budget by {formatCurrency(Math.abs(variance), 'INR')} — consider investing the surplus!
+              ✓ Under budget by {formatCurrency(Math.abs(variance), 'INR')} — consider investing the surplus!
             </div>
           )}
         </div>
       )}
 
-      {/* Category cards */}
+      {/* Category cards — clickable */}
       {isLoading
         ? <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">{Array.from({ length: 12 }).map((_, i) => <Skeleton key={i} className="h-24 rounded-xl" />)}</div>
         : (
           <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
             {EXPENSE_CATS.map(cat => {
-              const val = Number(amounts[cat.name] || 0)
-              const hasValue = val > 0
+              const catTotal = catTotals[cat.name] ?? 0
+              const count = monthItems.filter(i => i.category === cat.name).length
+              const hasValue = catTotal > 0
               return (
-                <div key={cat.name} className={cn(
-                  'rounded-xl border p-4 transition-all space-y-3',
-                  hasValue ? 'border-trust/40 bg-trust/5 shadow-sm' : 'border-border bg-card hover:border-trust/20',
-                )}>
+                <button
+                  key={cat.name}
+                  onClick={() => setOpenCat(cat)}
+                  className={cn(
+                    'rounded-xl border p-4 transition-all text-left w-full group hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 space-y-2.5',
+                    hasValue ? 'border-trust/40 bg-trust/5 shadow-sm' : 'border-border bg-card hover:border-trust/30 hover:bg-trust/5',
+                  )}
+                >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className="text-xl">{cat.icon}</span>
-                      <Label className="text-xs font-semibold cursor-default leading-tight">{cat.name}</Label>
+                      <span className="text-xs font-semibold leading-tight">{cat.name}</span>
                     </div>
-                    {hasValue && (
-                      <span className="text-[10px] font-bold text-trust bg-trust/10 px-1.5 py-0.5 rounded-full">saved</span>
-                    )}
+                    {hasValue
+                      ? <span className="text-[10px] font-bold text-trust bg-trust/10 px-1.5 py-0.5 rounded-full">{count} {count === 1 ? 'entry' : 'entries'}</span>
+                      : <Plus className="h-3.5 w-3.5 text-muted-foreground/50 group-hover:text-trust transition-colors" />
+                    }
                   </div>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-semibold">₹</span>
-                    <Input
-                      type="number" min={0}
-                      className="pl-7 h-9 text-sm"
-                      placeholder="0"
-                      value={amounts[cat.name] || ''}
-                      onChange={e => setAmounts(prev => ({ ...prev, [cat.name]: e.target.value }))}
-                    />
-                  </div>
-                </div>
+                  <p className={cn('text-lg font-bold font-numeric', hasValue ? 'text-trust' : 'text-muted-foreground/40')}>
+                    {hasValue ? formatCurrency(catTotal, 'INR') : '₹ —'}
+                  </p>
+                </button>
               )
             })}
           </div>
         )
       }
 
-      <Button onClick={handleSave} disabled={saving} size="lg" className="bg-trust hover:bg-trust/90 text-white gap-2 w-full sm:w-auto">
-        <Save className="h-4 w-4" /> {saving ? 'Saving…' : `Save ${MONTHS[month - 1]} ${year} Expenses`}
-      </Button>
+      {/* Category detail dialog */}
+      {openCat && (
+        <CategoryDetailDialog
+          open={!!openCat}
+          onOpenChange={v => !v && setOpenCat(null)}
+          category={openCat}
+          year={year}
+          month={month}
+        />
+      )}
     </div>
   )
 }
