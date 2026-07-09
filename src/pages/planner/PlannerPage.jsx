@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/format'
 import { usePlannerSettings, useSavePlannerSettings, usePlannerExpenses, useSaveExpense } from '@/hooks/usePlanner'
+import { useAuth } from '@/context/AuthContext'
 import {
   buildDashboard, investmentPct, emergencyLiquidPct,
   IDEAL, fv, computeHealthScore,
