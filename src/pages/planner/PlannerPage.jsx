@@ -15,7 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/format'
-import { usePlannerSettings, useSavePlannerSettings, usePlannerExpenses, useExpenseItems, useAddExpenseItem, useDeleteExpenseItem } from '@/hooks/usePlanner'
+import { usePlannerSettings, useSavePlannerSettings, usePlannerExpenses, useSaveExpense } from '@/hooks/usePlanner'
 import {
   buildDashboard, investmentPct, emergencyLiquidPct,
   IDEAL, fv, computeHealthScore,
@@ -591,13 +591,13 @@ function DashboardTab({ settings }) {
 // ── Monthly Tab ───────────────────────────────────────────────────────────────
 function MonthlyTab({ settings }) {
   const [year, setYear] = useState(CURRENT_YEAR)
-  const { data: items = [] } = useExpenseItems(year)
+  const { data: expenses = [] } = usePlannerExpenses(year)
   const dash = useMemo(() => settings ? buildDashboard(settings) : null, [settings])
   const actualByMonth = useMemo(() => {
     const map = {}
-    items.forEach(e => { map[e.month] = (map[e.month] || 0) + Number(e.amount) })
+    expenses.forEach(e => { map[e.month] = (map[e.month] || 0) + Number(e.amount) })
     return map
-  }, [items])
+  }, [expenses])
 
   if (!settings) return (
     <div className="rounded-2xl border border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 p-8 text-center space-y-2">
@@ -702,31 +702,46 @@ function MonthlyTab({ settings }) {
 }
 
 // ── Category Detail Dialog ────────────────────────────────────────────────────
+// Entries stored in localStorage — no new DB table required.
+// Total is saved to planner_expenses (existing table) so Monthly tab stays accurate.
 function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
+  const { user } = useAuth()
+  const { mutateAsync: saveExpense } = useSaveExpense()
+  const storageKey = `fp_exp_${user?.id}_${year}_${month}_${category.name.replace(/\W/g, '_')}`
+
   const today = new Date().toISOString().split('T')[0]
+  const [entries, setEntries] = useState([])
   const [date, setDate] = useState(today)
   const [particular, setParticular] = useState('')
   const [amount, setAmount] = useState('')
-  const { data: allItems = [], isError } = useExpenseItems(year)
-  const { mutateAsync: addItem, isPending: adding } = useAddExpenseItem()
-  const { mutateAsync: deleteItem } = useDeleteExpenseItem()
 
-  const items = useMemo(
-    () => allItems.filter(i => i.month === month && i.category === category.name),
-    [allItems, month, category.name]
-  )
-  const total = items.reduce((s, i) => s + Number(i.amount), 0)
+  // Load from localStorage when dialog opens
+  useEffect(() => {
+    if (!open) return
+    try { setEntries(JSON.parse(localStorage.getItem(storageKey) || '[]')) }
+    catch { setEntries([]) }
+  }, [open, storageKey])
 
-  async function handleAdd() {
+  const total = entries.reduce((s, e) => s + Number(e.amount), 0)
+
+  function persist(newEntries) {
+    const newTotal = newEntries.reduce((s, e) => s + Number(e.amount), 0)
+    setEntries(newEntries)
+    localStorage.setItem(storageKey, JSON.stringify(newEntries))
+    // Save total to existing planner_expenses table
+    saveExpense({ year, month, category: category.name, amount: newTotal }).catch(() => {})
+  }
+
+  function handleAdd() {
     if (!particular.trim()) { toast.error('Enter a particular / description'); return }
     if (!amount || Number(amount) <= 0) { toast.error('Enter a valid amount'); return }
-    try {
-      await addItem({ year, month, category: category.name, entry_date: date, description: particular.trim(), amount: Number(amount) })
-      setParticular('')
-      setAmount('')
-    } catch {
-      toast.error('Could not save. Run the SQL in Supabase first — see instructions.')
-    }
+    persist([...entries, { id: Date.now(), date, particular: particular.trim(), amount: Number(amount) }])
+    setParticular('')
+    setAmount('')
+  }
+
+  function handleDelete(id) {
+    persist(entries.filter(e => e.id !== id))
   }
 
   return (
@@ -739,14 +754,7 @@ function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
         </DialogHeader>
 
         <div className="space-y-4 pt-1">
-
-          {isError && (
-            <div className="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3 text-xs text-amber-700 dark:text-amber-400">
-              Table not set up yet. Run the SQL in Supabase SQL Editor to enable saving.
-            </div>
-          )}
-
-          {/* Add entry — 3 fields */}
+          {/* 3 input fields */}
           <div className="rounded-xl border border-border p-4 space-y-3">
             <div className="space-y-1.5">
               <Label className="text-xs font-semibold">Date</Label>
@@ -774,13 +782,13 @@ function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
                 />
               </div>
             </div>
-            <Button onClick={handleAdd} disabled={adding} className="w-full bg-trust hover:bg-trust/90 text-white gap-2">
-              <Plus className="h-4 w-4" /> {adding ? 'Adding…' : 'Add Entry'}
+            <Button onClick={handleAdd} className="w-full bg-trust hover:bg-trust/90 text-white gap-2">
+              <Plus className="h-4 w-4" /> Add Entry
             </Button>
           </div>
 
-          {/* Entries table */}
-          {items.length > 0 && (
+          {/* Entries table with auto-total */}
+          {entries.length > 0 && (
             <div className="rounded-xl border border-border overflow-hidden">
               <table className="w-full text-sm">
                 <thead>
@@ -792,23 +800,23 @@ function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map(item => (
-                    <tr key={item.id} className="border-b border-border/40 last:border-0">
+                  {entries.map(entry => (
+                    <tr key={entry.id} className="border-b border-border/40 last:border-0">
                       <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
-                        {new Date(item.entry_date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                        {new Date(entry.date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
                       </td>
-                      <td className="px-3 py-2 max-w-[160px] truncate">{item.description}</td>
-                      <td className="px-3 py-2 text-right font-numeric font-semibold">{formatCurrency(Number(item.amount), 'INR')}</td>
-                      <td className="pr-2">
-                        <button onClick={() => deleteItem({ id: item.id, year })} className="text-muted-foreground hover:text-destructive transition-colors p-1">
+                      <td className="px-3 py-2 max-w-[150px] truncate">{entry.particular}</td>
+                      <td className="px-3 py-2 text-right font-numeric font-semibold">{formatCurrency(Number(entry.amount), 'INR')}</td>
+                      <td className="pr-2 text-center">
+                        <button onClick={() => handleDelete(entry.id)} className="text-muted-foreground hover:text-destructive transition-colors p-1">
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </td>
                     </tr>
                   ))}
-                  <tr className="bg-muted/20 font-semibold border-t border-border">
-                    <td className="px-3 py-2 text-xs" colSpan={2}>Total</td>
-                    <td className="px-3 py-2 text-right font-numeric text-trust">{formatCurrency(total, 'INR')}</td>
+                  <tr className="bg-trust/5 font-bold border-t-2 border-trust/20">
+                    <td className="px-3 py-2.5 text-xs" colSpan={2}>Total</td>
+                    <td className="px-3 py-2.5 text-right font-numeric text-trust">{formatCurrency(total, 'INR')}</td>
                     <td />
                   </tr>
                 </tbody>
@@ -830,15 +838,13 @@ function ExpenseTab({ settings }) {
   const [year, setYear] = useState(CURRENT_YEAR)
   const [month, setMonth] = useState(new Date().getMonth() + 1)
   const [openCat, setOpenCat] = useState(null)
-  const { data: allItems = [], isLoading } = useExpenseItems(year)
-
-  const monthItems = useMemo(() => allItems.filter(i => i.month === month), [allItems, month])
+  const { data: expenses = [], isLoading } = usePlannerExpenses(year)
 
   const catTotals = useMemo(() => {
     const map = {}
-    monthItems.forEach(i => { map[i.category] = (map[i.category] ?? 0) + Number(i.amount) })
+    expenses.filter(e => e.month === month).forEach(e => { map[e.category] = Number(e.amount) })
     return map
-  }, [monthItems])
+  }, [expenses, month])
 
   const totalActual = Object.values(catTotals).reduce((s, v) => s + v, 0)
   const budgetExpenses = settings ? Math.round((settings.monthly_salary * settings.expenses_pct) / 100) : 0
