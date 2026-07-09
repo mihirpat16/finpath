@@ -48,6 +48,7 @@ export function useExpenseItems(year) {
     queryKey: ['expense-items', user?.id, year],
     queryFn: () => fetchExpenseItems(user.id, year),
     enabled: !!user?.id && !!year,
+    throwOnError: false,
   })
 }
 

@@ -48,7 +48,10 @@ export async function fetchExpenseItems(userId, year) {
     .eq('user_id', userId)
     .eq('year', year)
     .order('entry_date', { ascending: true })
-  if (error) throw error
+  if (error) {
+    if (error.code === '42P01') return [] // table not created yet — fail silently
+    throw error
+  }
   return data ?? []
 }
 

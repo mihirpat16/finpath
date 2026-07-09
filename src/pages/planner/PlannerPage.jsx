@@ -704,10 +704,12 @@ function MonthlyTab({ settings }) {
 // ── Category Detail Dialog ────────────────────────────────────────────────────
 function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
   const today = new Date().toISOString().split('T')[0]
-  const [form, setForm] = useState({ entry_date: today, description: '', amount: '' })
-  const { data: allItems = [] } = useExpenseItems(year)
+  const [date, setDate] = useState(today)
+  const [particular, setParticular] = useState('')
+  const [amount, setAmount] = useState('')
+  const { data: allItems = [], isError } = useExpenseItems(year)
   const { mutateAsync: addItem, isPending: adding } = useAddExpenseItem()
-  const { mutateAsync: deleteItem, isPending: deleting } = useDeleteExpenseItem()
+  const { mutateAsync: deleteItem } = useDeleteExpenseItem()
 
   const items = useMemo(
     () => allItems.filter(i => i.month === month && i.category === category.name),
@@ -716,104 +718,103 @@ function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
   const total = items.reduce((s, i) => s + Number(i.amount), 0)
 
   async function handleAdd() {
-    if (!form.description.trim()) { toast.error('Enter a description / particular'); return }
-    if (!form.amount || Number(form.amount) <= 0) { toast.error('Enter a valid amount'); return }
+    if (!particular.trim()) { toast.error('Enter a particular / description'); return }
+    if (!amount || Number(amount) <= 0) { toast.error('Enter a valid amount'); return }
     try {
-      await addItem({ year, month, category: category.name, entry_date: form.entry_date, description: form.description.trim(), amount: Number(form.amount) })
-      setForm(f => ({ ...f, description: '', amount: '' }))
-      toast.success('Entry added!')
-    } catch { toast.error('Could not add entry') }
-  }
-
-  async function handleDelete(item) {
-    try {
-      await deleteItem({ id: item.id, year })
-    } catch { toast.error('Could not delete entry') }
+      await addItem({ year, month, category: category.name, entry_date: date, description: particular.trim(), amount: Number(amount) })
+      setParticular('')
+      setAmount('')
+    } catch {
+      toast.error('Could not save. Run the SQL in Supabase first — see instructions.')
+    }
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-base">
-            <span className="text-2xl">{category.icon}</span> {category.name}
+          <DialogTitle className="flex items-center gap-2">
+            <span className="text-xl">{category.icon}</span> {category.name}
           </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4 pt-1">
-          {/* Total banner */}
-          <div className="rounded-xl border border-trust/20 bg-trust/5 px-4 py-3 flex items-center justify-between">
-            <div>
-              <p className="text-xs text-muted-foreground">{MONTHS[month - 1]} total</p>
-              <p className="text-2xl font-bold font-numeric text-trust">{formatCurrency(total, 'INR')}</p>
-            </div>
-            <span className="text-xs text-muted-foreground">{items.length} {items.length === 1 ? 'entry' : 'entries'}</span>
-          </div>
 
-          {/* Entries list */}
-          {items.length > 0 && (
-            <div className="rounded-xl border border-border overflow-hidden">
-              <div className="bg-muted/30 grid grid-cols-[76px_1fr_86px_30px] gap-2 px-3 py-2 text-[11px] font-medium text-muted-foreground">
-                <span>Date</span><span>Particular</span><span className="text-right">Amount</span><span />
-              </div>
-              <div className="max-h-52 overflow-y-auto divide-y divide-border/40">
-                {items.map(item => (
-                  <div key={item.id} className="grid grid-cols-[76px_1fr_86px_30px] gap-2 items-center px-3 py-2.5 text-sm">
-                    <span className="text-xs text-muted-foreground whitespace-nowrap">
-                      {new Date(item.entry_date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
-                    </span>
-                    <span className="truncate">{item.description}</span>
-                    <span className="text-right font-numeric font-semibold">{formatCurrency(Number(item.amount), 'INR')}</span>
-                    <button onClick={() => handleDelete(item)} disabled={deleting} className="text-muted-foreground hover:text-destructive transition-colors flex justify-center">
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-              <div className="bg-muted/20 border-t border-border px-3 py-2.5 flex justify-between items-center">
-                <span className="text-xs font-semibold text-muted-foreground">Total</span>
-                <span className="text-sm font-bold font-numeric text-trust">{formatCurrency(total, 'INR')}</span>
-              </div>
+          {isError && (
+            <div className="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3 text-xs text-amber-700 dark:text-amber-400">
+              Table not set up yet. Run the SQL in Supabase SQL Editor to enable saving.
             </div>
           )}
 
-          {/* Add entry form */}
-          <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-3">
-            <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">Add Entry</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label className="text-xs">Date</Label>
-                <Input
-                  type="date" value={form.entry_date} className="h-9 text-sm"
-                  onChange={e => setForm(f => ({ ...f, entry_date: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Amount (₹)</Label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-semibold">₹</span>
-                  <Input
-                    type="number" min="0" step="0.01" placeholder="0"
-                    value={form.amount} className="pl-7 h-9 text-sm"
-                    onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
-                    onKeyDown={e => e.key === 'Enter' && handleAdd()}
-                  />
-                </div>
-              </div>
+          {/* Add entry — 3 fields */}
+          <div className="rounded-xl border border-border p-4 space-y-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Date</Label>
+              <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="h-9" />
             </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Particular / Description</Label>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Particular</Label>
               <Input
-                placeholder="e.g. Groceries from D-Mart, Electricity bill…"
-                value={form.description} className="h-9 text-sm"
-                onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                placeholder="e.g. Groceries from D-Mart"
+                value={particular}
+                onChange={e => setParticular(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleAdd()}
+                className="h-9"
               />
             </div>
-            <Button onClick={handleAdd} disabled={adding} size="sm" className="w-full bg-trust hover:bg-trust/90 text-white gap-2 h-9">
-              <Plus className="h-3.5 w-3.5" /> {adding ? 'Adding…' : 'Add Entry'}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Amount (₹)</Label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground font-semibold">₹</span>
+                <Input
+                  type="number" min="0" step="0.01" placeholder="0"
+                  value={amount} onChange={e => setAmount(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleAdd()}
+                  className="pl-7 h-9"
+                />
+              </div>
+            </div>
+            <Button onClick={handleAdd} disabled={adding} className="w-full bg-trust hover:bg-trust/90 text-white gap-2">
+              <Plus className="h-4 w-4" /> {adding ? 'Adding…' : 'Add Entry'}
             </Button>
           </div>
+
+          {/* Entries table */}
+          {items.length > 0 && (
+            <div className="rounded-xl border border-border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/40 border-b border-border text-xs text-muted-foreground font-medium">
+                    <th className="text-left px-3 py-2">Date</th>
+                    <th className="text-left px-3 py-2">Particular</th>
+                    <th className="text-right px-3 py-2">Amount</th>
+                    <th className="w-8" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map(item => (
+                    <tr key={item.id} className="border-b border-border/40 last:border-0">
+                      <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
+                        {new Date(item.entry_date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                      </td>
+                      <td className="px-3 py-2 max-w-[160px] truncate">{item.description}</td>
+                      <td className="px-3 py-2 text-right font-numeric font-semibold">{formatCurrency(Number(item.amount), 'INR')}</td>
+                      <td className="pr-2">
+                        <button onClick={() => deleteItem({ id: item.id, year })} className="text-muted-foreground hover:text-destructive transition-colors p-1">
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="bg-muted/20 font-semibold border-t border-border">
+                    <td className="px-3 py-2 text-xs" colSpan={2}>Total</td>
+                    <td className="px-3 py-2 text-right font-numeric text-trust">{formatCurrency(total, 'INR')}</td>
+                    <td />
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         <DialogFooter>
