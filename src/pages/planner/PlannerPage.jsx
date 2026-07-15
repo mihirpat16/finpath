@@ -16,7 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/format'
-import { usePlannerSettings, useSavePlannerSettings, usePlannerExpenses, useSaveExpense } from '@/hooks/usePlanner'
+import { usePlannerSettings, useSavePlannerSettings, usePlannerExpenses, useSaveExpense, useExpenseItems, useAddExpenseItem, useDeleteExpenseItem } from '@/hooks/usePlanner'
 import { useAuth } from '@/context/AuthContext'
 import {
   buildDashboard, investmentPct, emergencyLiquidPct,
@@ -704,46 +704,45 @@ function MonthlyTab({ settings }) {
 }
 
 // ── Category Detail Dialog ────────────────────────────────────────────────────
-// Entries stored in localStorage — no new DB table required.
-// Total is saved to planner_expenses (existing table) so Monthly tab stays accurate.
+// Entries stored in planner_expense_items (DB) — works across devices and
+// picks up SMS-auto-added entries from the Vercel webhook.
 function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
-  const { user } = useAuth()
+  const { mutateAsync: addItem, isPending: adding } = useAddExpenseItem()
+  const { mutateAsync: deleteItem } = useDeleteExpenseItem()
   const { mutateAsync: saveExpense } = useSaveExpense()
-  const storageKey = `fp_exp_${user?.id}_${year}_${month}_${category.name.replace(/\W/g, '_')}`
+  const { data: allItems = [] } = useExpenseItems(year)
 
   const today = new Date().toISOString().split('T')[0]
-  const [entries, setEntries] = useState([])
   const [date, setDate] = useState(today)
   const [particular, setParticular] = useState('')
   const [amount, setAmount] = useState('')
 
-  // Load from localStorage when dialog opens
-  useEffect(() => {
-    if (!open) return
-    try { setEntries(JSON.parse(localStorage.getItem(storageKey) || '[]')) }
-    catch { setEntries([]) }
-  }, [open, storageKey])
+  const entries = useMemo(
+    () => allItems
+      .filter(e => e.month === month && e.category === category.name)
+      .sort((a, b) => (a.entry_date ?? '').localeCompare(b.entry_date ?? '')),
+    [allItems, month, category.name]
+  )
 
   const total = entries.reduce((s, e) => s + Number(e.amount), 0)
 
-  function persist(newEntries) {
-    const newTotal = newEntries.reduce((s, e) => s + Number(e.amount), 0)
-    setEntries(newEntries)
-    localStorage.setItem(storageKey, JSON.stringify(newEntries))
-    // Save total to existing planner_expenses table
-    saveExpense({ year, month, category: category.name, amount: newTotal }).catch(() => {})
-  }
-
-  function handleAdd() {
+  async function handleAdd() {
     if (!particular.trim()) { toast.error('Enter a particular / description'); return }
     if (!amount || Number(amount) <= 0) { toast.error('Enter a valid amount'); return }
-    persist([...entries, { id: Date.now(), date, particular: particular.trim(), amount: Number(amount) }])
-    setParticular('')
-    setAmount('')
+    const amt = Number(amount)
+    try {
+      await addItem({ year, month, category: category.name, entry_date: date, particular: particular.trim(), amount: amt, source: 'manual' })
+      saveExpense({ year, month, category: category.name, amount: total + amt }).catch(() => {})
+      setParticular('')
+      setAmount('')
+    } catch { toast.error('Could not save entry. Please try again.') }
   }
 
-  function handleDelete(id) {
-    persist(entries.filter(e => e.id !== id))
+  async function handleDelete(entry) {
+    try {
+      await deleteItem({ id: entry.id, year })
+      saveExpense({ year, month, category: category.name, amount: Math.max(0, total - Number(entry.amount)) }).catch(() => {})
+    } catch { toast.error('Could not delete entry.') }
   }
 
   return (
@@ -784,8 +783,8 @@ function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
                 />
               </div>
             </div>
-            <Button onClick={handleAdd} className="w-full bg-trust hover:bg-trust/90 text-white gap-2">
-              <Plus className="h-4 w-4" /> Add Entry
+            <Button onClick={handleAdd} disabled={adding} className="w-full bg-trust hover:bg-trust/90 text-white gap-2">
+              <Plus className="h-4 w-4" /> {adding ? 'Saving…' : 'Add Entry'}
             </Button>
           </div>
 
@@ -805,12 +804,17 @@ function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
                   {entries.map(entry => (
                     <tr key={entry.id} className="border-b border-border/40 last:border-0">
                       <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">
-                        {new Date(entry.date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                        {new Date((entry.entry_date ?? entry.date) + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
                       </td>
-                      <td className="px-3 py-2 max-w-[150px] truncate">{entry.particular}</td>
+                      <td className="px-3 py-2 max-w-[150px] truncate">
+                        {entry.particular}
+                        {entry.source === 'sms' && (
+                          <span className="ml-1.5 text-[9px] font-bold text-trust bg-trust/10 px-1 py-0.5 rounded">SMS</span>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-right font-numeric font-semibold">{formatCurrency(Number(entry.amount), 'INR')}</td>
                       <td className="pr-2 text-center">
-                        <button onClick={() => handleDelete(entry.id)} className="text-muted-foreground hover:text-destructive transition-colors p-1">
+                        <button onClick={() => handleDelete(entry)} className="text-muted-foreground hover:text-destructive transition-colors p-1">
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </td>
@@ -837,17 +841,23 @@ function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
 
 // ── Expense Tab ───────────────────────────────────────────────────────────────
 function ExpenseTab({ settings }) {
-  const { user } = useAuth()
   const [year, setYear] = useState(CURRENT_YEAR)
   const [month, setMonth] = useState(new Date().getMonth() + 1)
   const [openCat, setOpenCat] = useState(null)
   const { data: expenses = [], isLoading } = usePlannerExpenses(year)
+  const { data: allItems = [] } = useExpenseItems(year)
 
   const catTotals = useMemo(() => {
     const map = {}
     expenses.filter(e => e.month === month).forEach(e => { map[e.category] = Number(e.amount) })
     return map
   }, [expenses, month])
+
+  const catCounts = useMemo(() => {
+    const map = {}
+    allItems.filter(e => e.month === month).forEach(e => { map[e.category] = (map[e.category] || 0) + 1 })
+    return map
+  }, [allItems, month])
 
   const totalActual = Object.values(catTotals).reduce((s, v) => s + v, 0)
   const budgetExpenses = settings ? Math.round((settings.monthly_salary * settings.expenses_pct) / 100) : 0
@@ -921,12 +931,7 @@ function ExpenseTab({ settings }) {
           <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
             {EXPENSE_CATS.map(cat => {
               const catTotal = catTotals[cat.name] ?? 0
-              const count = (() => {
-                try {
-                  const key = `fp_exp_${user?.id}_${year}_${month}_${cat.name.replace(/\W/g, '_')}`
-                  return JSON.parse(localStorage.getItem(key) || '[]').length
-                } catch { return 0 }
-              })()
+              const count = catCounts[cat.name] ?? 0
               const hasValue = catTotal > 0
               return (
                 <button
