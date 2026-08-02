@@ -28,17 +28,33 @@ const CURRENT_YEAR = new Date().getFullYear()
 const YEARS = [CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1]
 
 const EXPENSE_CATS = [
+  // Housing & Utilities
+  { name: 'Rent / Housing', icon: '🏠' },
   { name: 'Electricity', icon: '⚡' },
-  { name: 'Medical', icon: '🏥' },
+  { name: 'Gas / LPG', icon: '🔥' },
+  { name: 'Internet / Mobile', icon: '📶' },
+  { name: 'Home Maintenance', icon: '🔧' },
+  // Daily Needs
   { name: 'Grocery', icon: '🛒' },
-  { name: 'Festival / Gifts', icon: '🎁' },
+  { name: 'Medical', icon: '🏥' },
+  { name: 'Dining Out', icon: '🍽️' },
+  // Transport
+  { name: 'Transport / Fuel', icon: '⛽' },
+  { name: 'Vehicle Maintenance', icon: '🚗' },
+  // Lifestyle
   { name: 'Clothes', icon: '👕' },
   { name: 'Accessories', icon: '👜' },
-  { name: 'Electronics / Gadgets', icon: '📱' },
-  { name: 'Dining Out', icon: '🍽️' },
-  { name: 'Transport / Fuel', icon: '⛽' },
   { name: 'Personal Care', icon: '💆' },
+  { name: 'Gym / Fitness', icon: '🏋️' },
+  { name: 'Entertainment', icon: '🎬' },
+  { name: 'Vacation / Travel', icon: '✈️' },
+  // Financial & Learning
+  { name: 'Insurance', icon: '🛡️' },
   { name: 'Subscriptions', icon: '📺' },
+  { name: 'Education', icon: '📚' },
+  // Others
+  { name: 'Electronics / Gadgets', icon: '📱' },
+  { name: 'Festival / Gifts', icon: '🎁' },
   { name: 'Miscellaneous', icon: '📦' },
 ]
 
