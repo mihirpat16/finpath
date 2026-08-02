@@ -839,6 +839,101 @@ function CategoryDetailDialog({ open, onOpenChange, category, year, month }) {
   )
 }
 
+// ── Spending Insights ─────────────────────────────────────────────────────────
+function SpendingInsights({ chartData, totalActual, month, year }) {
+  if (totalActual === 0 || chartData.length === 0) return null
+
+  const prevMonthName = MONTHS[month === 1 ? 11 : month - 2]
+  const topCat = chartData[0]
+  const increased = chartData.filter(d => d.previous > 0 && d.current > d.previous * 1.1)
+  const decreased = chartData.filter(d => d.previous > 0 && d.current < d.previous * 0.9)
+  const newSpend  = chartData.filter(d => d.previous === 0 && d.current > 0)
+
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5 space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-semibold">Spending Breakdown</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Where your money went · vs {prevMonthName}</p>
+        </div>
+        <span className="text-xs font-semibold text-muted-foreground bg-muted px-2.5 py-1 rounded-full">
+          {MONTHS[month - 1]} {year}
+        </span>
+      </div>
+
+      {/* Horizontal bars */}
+      <div className="space-y-3">
+        {chartData.map(item => {
+          const pct = totalActual > 0 ? Math.min(100, (item.current / totalActual) * 100) : 0
+          const change = item.previous > 0 ? ((item.current - item.previous) / item.previous) * 100 : null
+          const isUp   = change !== null && change > 5
+          const isDown = change !== null && change < -5
+
+          return (
+            <div key={item.name} className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1.5 font-medium">
+                  <span className="text-base">{item.icon}</span>
+                  {item.name}
+                </span>
+                <div className="flex items-center gap-2">
+                  {isUp   && <span className="text-destructive font-semibold">▲ {Math.abs(change).toFixed(0)}%</span>}
+                  {isDown && <span className="text-growth font-semibold">▼ {Math.abs(change).toFixed(0)}%</span>}
+                  {change === null && item.current > 0 && <span className="text-muted-foreground text-[10px]">new</span>}
+                  <span className="font-bold font-numeric w-24 text-right">{formatCurrency(item.current, 'INR')}</span>
+                </div>
+              </div>
+              <div className="relative h-2 rounded-full bg-muted overflow-hidden">
+                <div
+                  className={cn(
+                    'h-full rounded-full transition-all duration-700',
+                    isUp ? 'bg-destructive/70' : isDown ? 'bg-growth' : 'bg-trust/70'
+                  )}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              {item.previous > 0 && (
+                <p className="text-[10px] text-muted-foreground">
+                  {prevMonthName}: {formatCurrency(item.previous, 'INR')}
+                </p>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Insight callouts */}
+      <div className="space-y-2">
+        <div className="rounded-xl bg-muted/40 px-4 py-3 text-xs space-y-1.5">
+          <p>
+            <span className="font-semibold">💡 Top spend:</span>{' '}
+            {topCat.icon} {topCat.name} — {formatCurrency(topCat.current, 'INR')} ({((topCat.current / totalActual) * 100).toFixed(0)}% of total)
+          </p>
+          {increased.length > 0 && (
+            <p className="text-destructive">
+              <span className="font-semibold">⚠️ Increased vs {prevMonthName}:</span>{' '}
+              {increased.map(c => `${c.icon} ${c.name}`).join(' · ')} — consider cutting these next month.
+            </p>
+          )}
+          {decreased.length > 0 && (
+            <p className="text-growth">
+              <span className="font-semibold">✓ Reduced vs {prevMonthName}:</span>{' '}
+              {decreased.map(c => `${c.icon} ${c.name}`).join(' · ')} — good discipline!
+            </p>
+          )}
+          {newSpend.length > 0 && (
+            <p className="text-amber-500">
+              <span className="font-semibold">🆕 New this month:</span>{' '}
+              {newSpend.map(c => `${c.icon} ${c.name}`).join(' · ')}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Expense Tab ───────────────────────────────────────────────────────────────
 function ExpenseTab({ settings }) {
   const [year, setYear] = useState(CURRENT_YEAR)
@@ -846,6 +941,10 @@ function ExpenseTab({ settings }) {
   const [openCat, setOpenCat] = useState(null)
   const { data: expenses = [], isLoading } = usePlannerExpenses(year)
   const { data: allItems = [] } = useExpenseItems(year)
+
+  // Load previous month's year (may differ when month = Jan)
+  const prevYear = month === 1 ? year - 1 : year
+  const { data: prevExpenses = [] } = usePlannerExpenses(prevYear)
 
   const catTotals = useMemo(() => {
     const map = {}
@@ -858,6 +957,22 @@ function ExpenseTab({ settings }) {
     allItems.filter(e => e.month === month).forEach(e => { map[e.category] = (map[e.category] || 0) + 1 })
     return map
   }, [allItems, month])
+
+  // Build chart data: current month vs previous month, sorted by spend
+  const chartData = useMemo(() => {
+    const prevMonth = month === 1 ? 12 : month - 1
+    const prevTotals = {}
+    prevExpenses.filter(e => e.month === prevMonth).forEach(e => { prevTotals[e.category] = Number(e.amount) })
+    return EXPENSE_CATS
+      .map(cat => ({
+        name: cat.name,
+        icon: cat.icon,
+        current: catTotals[cat.name] ?? 0,
+        previous: prevTotals[cat.name] ?? 0,
+      }))
+      .filter(d => d.current > 0 || d.previous > 0)
+      .sort((a, b) => b.current - a.current)
+  }, [catTotals, prevExpenses, month])
 
   const totalActual = Object.values(catTotals).reduce((s, v) => s + v, 0)
   const budgetExpenses = settings ? Math.round((settings.monthly_salary * settings.expenses_pct) / 100) : 0
@@ -923,6 +1038,9 @@ function ExpenseTab({ settings }) {
           )}
         </div>
       )}
+
+      {/* Spending breakdown + insights */}
+      <SpendingInsights chartData={chartData} totalActual={totalActual} month={month} year={year} />
 
       {/* Category cards — clickable */}
       {isLoading
